@@ -6,6 +6,23 @@ import test from "node:test";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const origin = "http://localhost:4179";
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const validPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
+function garmentForm() {
+  const form = new FormData();
+  form.set("name", "隔离测试上衣");
+  form.set("category", "上装");
+  form.set("color", "#d7dff0");
+  form.set("colorName", "雾霾蓝");
+  form.set("size", "M");
+  form.set("season", "四季");
+  form.set("style", "轻松");
+  form.set("confidence", "中");
+  return form;
+}
 
 async function waitForServer(child, logs) {
   const deadline = Date.now() + 30_000;
@@ -69,6 +86,102 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
   try {
     await waitForServer(child, logs);
 
+    const malformedProfile = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: "{",
+    });
+    assert.equal(malformedProfile.status, 400);
+    assert.deepEqual(await malformedProfile.json(), { error: "invalid JSON" });
+
+    const nullProfile = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: "null",
+    });
+    assert.equal(nullProfile.status, 400);
+
+    const wrongProfileType = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "text/plain" },
+      body: "hello",
+    });
+    assert.equal(wrongProfileType.status, 415);
+
+    const wrongGarmentType = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: { ...userA, "content-type": "text/plain" },
+      body: "hello",
+    });
+    assert.equal(wrongGarmentType.status, 415);
+
+    const invalidGarment = garmentForm();
+    invalidGarment.set("name", "x".repeat(121));
+    invalidGarment.set("chest", "999");
+    const invalidGarmentResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: invalidGarment,
+    });
+    assert.equal(invalidGarmentResponse.status, 400);
+
+    const invalidMeasurement = garmentForm();
+    invalidMeasurement.set("chest", "999");
+    const invalidMeasurementResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: invalidMeasurement,
+    });
+    assert.equal(invalidMeasurementResponse.status, 400);
+
+    const invalidUrl = garmentForm();
+    invalidUrl.set("sourceUrl", "javascript:alert(1)");
+    const invalidUrlResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: invalidUrl,
+    });
+    assert.equal(invalidUrlResponse.status, 400);
+
+    const longUrl = garmentForm();
+    longUrl.set("sourceUrl", `https://example.com/${"x".repeat(1000)}`);
+    const longUrlResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: longUrl,
+    });
+    assert.equal(longUrlResponse.status, 400);
+
+    const invalidImage = garmentForm();
+    invalidImage.set("photo", new Blob(["<svg></svg>"], { type: "image/svg+xml" }), "unsafe.svg");
+    const invalidImageResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: invalidImage,
+    });
+    assert.equal(invalidImageResponse.status, 400);
+
+    const truncatedImage = garmentForm();
+    truncatedImage.set("photo", new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], { type: "image/png" }), "truncated.png");
+    const truncatedImageResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: truncatedImage,
+    });
+    assert.equal(truncatedImageResponse.status, 400);
+
+    const forgedPngBytes = new Uint8Array(40);
+    forgedPngBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    forgedPngBytes.set([73, 69, 78, 68, 174, 66, 96, 130], 32);
+    const forgedImage = garmentForm();
+    forgedImage.set("photo", new Blob([forgedPngBytes], { type: "image/png" }), "forged.png");
+    const forgedImageResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: forgedImage,
+    });
+    assert.equal(forgedImageResponse.status, 400);
+
     const profile = {
       height: 166,
       weight: 58,
@@ -92,17 +205,9 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.equal(ownProfile.profile.height, 166);
     assert.equal(otherProfile.profile, null);
 
-    const form = new FormData();
+    const form = garmentForm();
     form.set("id", "w-client-controlled");
-    form.set("name", "隔离测试上衣");
-    form.set("category", "上装");
-    form.set("color", "#d7dff0");
-    form.set("colorName", "雾霾蓝");
-    form.set("size", "M");
-    form.set("season", "四季");
-    form.set("style", "轻松");
-    form.set("confidence", "中");
-    form.set("photo", new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], { type: "image/png" }), "tiny.png");
+    form.set("photo", new Blob([validPng], { type: "image/png" }), "tiny.png");
     const createResponse = await fetch(`${origin}/api/wardrobe`, { method: "POST", headers: userA, body: form });
     assert.equal(createResponse.status, 201, logs.value);
     const { item } = await createResponse.json();

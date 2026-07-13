@@ -510,6 +510,10 @@ h3 {
   z-index: 2;
 }
 
+.avatar-canvas--hidden {
+  visibility: hidden;
+}
+
 .avatar-canvas canvas {
   height: 100% !important;
   touch-action: pan-y !important;
@@ -538,6 +542,49 @@ h3 {
 
 .avatar-loading p {
   font-size: 12px;
+}
+
+.avatar-unavailable {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  inset: 0;
+  justify-content: center;
+  padding: 34px;
+  position: absolute;
+  text-align: center;
+  z-index: 7;
+}
+
+.avatar-unavailable > span {
+  align-items: center;
+  background: rgba(255, 253, 249, 0.72);
+  border: 1px solid rgba(75, 64, 61, 0.12);
+  border-radius: 50%;
+  color: var(--coral-dark);
+  display: flex;
+  font-size: 22px;
+  height: 54px;
+  justify-content: center;
+  width: 54px;
+}
+
+.avatar-unavailable strong {
+  color: var(--ink);
+  font-family: "Songti SC", Georgia, serif;
+  font-size: 17px;
+}
+
+.avatar-unavailable p {
+  font-size: 11px;
+  line-height: 1.6;
+  max-width: 260px;
+}
+
+.avatar-unavailable .button {
+  margin-top: 4px;
 }
 
 .avatar-glow {
@@ -1718,6 +1765,33 @@ input[type="range"] {
   width: 20px;
 }
 
+.studio-list-empty {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 220px;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+}
+
+.studio-list-empty > span {
+  font-size: 24px;
+}
+
+.studio-list-empty strong {
+  color: var(--ink);
+  font-family: "Songti SC", Georgia, serif;
+  font-size: 14px;
+}
+
+.studio-list-empty p {
+  font-size: 9px;
+  line-height: 1.6;
+}
+
 .studio-avatar-wrap {
   min-height: 720px;
   padding: 14px;
@@ -1825,6 +1899,10 @@ input[type="range"] {
   background: transparent;
   color: var(--muted);
   font-size: 8px;
+}
+
+.reset-button:disabled {
+  opacity: 0.45;
 }
 
 .body-panel {
@@ -2603,6 +2681,10 @@ input[type="range"] {
   gap: 8px;
   grid-template-columns: 1fr 0.7fr 1.1fr;
   margin-top: 10px;
+}
+
+.field-row--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .field input,

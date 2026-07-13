@@ -41,17 +41,20 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, avatar, hosting, packageJson, requestOwner] = await Promise.all([
+  const [page, layout, app, avatar, deferredAvatar, wardrobeRoute, hosting, packageJson, requestOwner] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/Avatar3D.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/DeferredAvatar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/request-owner.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /<MuseApp \/>/);
+  assert.match(page, /<MuseApp[^>]+storageOwner=/);
+  assert.match(page, /key=\{user\?\.email \?\? "device"\}/);
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
   assert.match(layout, /\/og\.jpg/);
   assert.match(app, /VIRTUAL SHOPPING/);
@@ -59,11 +62,29 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /不代表衣服的实际尺寸/);
   assert.match(app, /本机已保存/);
   assert.match(app, /Promise\.allSettled/);
+  assert.match(app, /localSnapshotKey\(storageOwner\)/);
+  assert.match(app, /cloudItemIds\.current\.has/);
+  assert.match(app, /savedProductIds/);
   assert.match(avatar, /WebGLRenderer/);
   assert.match(avatar, /OrbitControls/);
+  assert.match(avatar, /webglcontextlost/);
+  assert.match(avatar, /forceContextLoss/);
+  assert.match(avatar, /1000 \/ 30/);
+  assert.match(avatar, /controls\.update\(deltaSeconds\)/);
+  assert.match(avatar, /role="group"/);
+  assert.match(deferredAvatar, /requestIdleCallback/);
+  assert.match(deferredAvatar, /saveData/);
+  assert.match(deferredAvatar, /AvatarErrorBoundary/);
+  assert.match(deferredAvatar, /catch\(\(\) =>/);
+  assert.match(wardrobeRoute, /datetime\('now', '-10 minutes'\)/);
+  assert.match(wardrobeRoute, /ALLOWED_IMAGE_TYPES/);
+  assert.match(wardrobeRoute, /db\.batch/);
+  assert.match(wardrobeRoute, /image deletion temporarily unavailable/);
+  assert.match(wardrobeRoute, /crc32/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);
+  assert.match(packageJson, /"typecheck"/);
   assert.doesNotMatch(requestOwner, /private-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
@@ -73,14 +94,21 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   await access(new URL("../app/api/profile/route.ts", import.meta.url));
 });
 
-test("rejects anonymous access to private wardrobe APIs", async () => {
+test("rejects anonymous reads and writes to private wardrobe APIs", async () => {
   const worker = await loadWorker();
   const env = {
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
   };
-  for (const path of ["/api/wardrobe", "/api/profile", "/api/wardrobe/image?id=w-test"]) {
+  for (const [path, method] of [
+    ["/api/wardrobe", "GET"],
+    ["/api/wardrobe", "POST"],
+    ["/api/wardrobe?id=w-test", "DELETE"],
+    ["/api/profile", "GET"],
+    ["/api/profile", "PUT"],
+    ["/api/wardrobe/image?id=w-test", "GET"],
+  ]) {
     const response = await worker.fetch(
-      new Request(`https://public.example${path}`),
+      new Request(`https://public.example${path}`, { method }),
       env,
       { waitUntil() {}, passThroughOnException() {} },
     );

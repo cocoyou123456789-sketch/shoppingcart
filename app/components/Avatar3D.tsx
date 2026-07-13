@@ -68,37 +68,87 @@ export function Avatar3D({
   metrics,
   outfit,
   compact = false,
+  focusOnReady = false,
 }: {
   metrics: BodyMetrics;
   outfit: AvatarOutfit;
   compact?: boolean;
+  focusOnReady?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const viewSwitcherRef = useRef<HTMLDivElement>(null);
+  const focusAfterRetryRef = useRef(false);
+  const focusOnReadyRef = useRef(focusOnReady);
   const [cameraView, setCameraView] = useState<CameraView>("angle");
+  const [renderFailed, setRenderFailed] = useState(false);
+  const [retryVersion, setRetryVersion] = useState(0);
   const cameraViewRef = useRef<CameraView>("angle");
-  const sceneMetrics = useDebouncedValue(metrics, 90);
-  const sceneOutfit = useDebouncedValue(outfit, 90);
+  const sceneMetrics = useDebouncedValue(metrics, 180);
+  const sceneOutfit = useDebouncedValue(outfit, 180);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
+    const cleanups: Array<() => void> = [];
+    let tornDown = false;
+    const teardown = () => {
+      if (tornDown) return;
+      tornDown = true;
+      for (const cleanup of cleanups.reverse()) {
+        try {
+          cleanup();
+        } catch {
+          // A failed graphics resource must not prevent the remaining cleanup.
+        }
+      }
+      mount.replaceChildren();
+      cameraRef.current = null;
+      controlsRef.current = null;
+    };
+
+    try {
+
     const width = Math.max(mount.clientWidth, 280);
     const height = Math.max(mount.clientHeight, compact ? 390 : 520);
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const isSmallScreen = window.matchMedia("(max-width: 768px)").matches;
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const smallScreenQuery = window.matchMedia("(max-width: 768px)");
+    const reduceMotion = motionQuery.matches;
+    const isSmallScreen = smallScreenQuery.matches;
+    const navigatorWithHints = navigator as Navigator & {
+      connection?: { saveData?: boolean };
+      deviceMemory?: number;
+    };
+    const lowPowerDevice = Boolean(
+      navigatorWithHints.connection?.saveData ||
+      (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+      (navigatorWithHints.deviceMemory && navigatorWithHints.deviceMemory <= 4),
+    );
     const scene = new THREE.Scene();
+    cleanups.push(() => {
+      scene.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose();
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          materials.forEach((item) => item.dispose());
+        }
+      });
+    });
     const camera = new THREE.PerspectiveCamera(31, width / height, 0.1, 100);
     camera.position.set(...CAMERA_POSITIONS[cameraViewRef.current]);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: !lowPowerDevice, alpha: true });
+    cleanups.push(() => {
+      renderer.dispose();
+      renderer.forceContextLoss();
+    });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isSmallScreen ? 1.5 : 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isSmallScreen || lowPowerDevice ? 1.25 : 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !lowPowerDevice;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.setAttribute(
       "aria-label",
@@ -110,8 +160,8 @@ export function Avatar3D({
     scene.add(new THREE.HemisphereLight(0xfff7ed, 0x635f7b, 2.5));
     const keyLight = new THREE.DirectionalLight(0xffffff, 3.6);
     keyLight.position.set(4, 8, 6);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(isSmallScreen ? 512 : 1024, isSmallScreen ? 512 : 1024);
+    keyLight.castShadow = !lowPowerDevice;
+    keyLight.shadow.mapSize.set(isSmallScreen || lowPowerDevice ? 512 : 1024, isSmallScreen || lowPowerDevice ? 512 : 1024);
     scene.add(keyLight);
     const rimLight = new THREE.DirectionalLight(0xdac9ff, 1.8);
     rimLight.position.set(-5, 4, -4);
@@ -239,53 +289,118 @@ export function Avatar3D({
     scene.add(floor);
 
     const controls = new OrbitControls(camera, renderer.domElement);
+    cleanups.push(() => controls.dispose());
     renderer.domElement.style.touchAction = "pan-y";
     controls.enablePan = false;
-    controls.enableDamping = !reduceMotion;
+    controls.enableDamping = !reduceMotion && !lowPowerDevice;
     controls.dampingFactor = 0.06;
     controls.minDistance = 6.5;
     controls.maxDistance = 12;
     controls.target.set(0, 2.55, 0);
-    controls.autoRotate = !reduceMotion;
+    controls.autoRotate = !reduceMotion && !lowPowerDevice;
     controls.autoRotateSpeed = 0.45;
     controlsRef.current = controls;
 
     let animationFrame = 0;
+    let animationTimer = 0;
+    let lastRenderTime = performance.now();
     let inViewport = true;
     let pageVisible = !document.hidden;
+    let rendererFailed = false;
     const continuousAnimation = controls.autoRotate;
-    const renderFrame = () => {
-      controls.update();
-      renderer.render(scene, camera);
+    const failRendering = () => {
+      if (rendererFailed) return;
+      rendererFailed = true;
+      setRenderFailed(true);
+      teardown();
     };
-    const handleControlsChange = () => renderer.render(scene, camera);
-    if (!continuousAnimation) controls.addEventListener("change", handleControlsChange);
-    const animate = () => {
+    const renderFrame = (timestamp = performance.now()) => {
+      if (rendererFailed) return false;
+      try {
+        const deltaSeconds = Math.min(0.1, Math.max(0, timestamp - lastRenderTime) / 1000);
+        controls.update(deltaSeconds);
+        renderer.render(scene, camera);
+        lastRenderTime = timestamp;
+        return true;
+      } catch {
+        failRendering();
+        return false;
+      }
+    };
+    const handleControlsChange = () => {
+      if (!animationFrame && !animationTimer) renderFrame();
+    };
+    if (!continuousAnimation) {
+      controls.addEventListener("change", handleControlsChange);
+      cleanups.push(() => controls.removeEventListener("change", handleControlsChange));
+    }
+    const scheduleAnimation = () => {
+      if (
+        rendererFailed ||
+        !continuousAnimation ||
+        !inViewport ||
+        !pageVisible ||
+        animationFrame ||
+        animationTimer
+      ) return;
+      const delay = Math.max(0, 1000 / 30 - (performance.now() - lastRenderTime) - 4);
+      animationTimer = window.setTimeout(() => {
+        animationTimer = 0;
+        if (!rendererFailed && inViewport && pageVisible) {
+          animationFrame = window.requestAnimationFrame(animate);
+        }
+      }, delay);
+    };
+    const animate = (timestamp: number) => {
       animationFrame = 0;
-      if (!inViewport || !pageVisible) return;
-      renderFrame();
-      animationFrame = window.requestAnimationFrame(animate);
+      if (!inViewport || !pageVisible || rendererFailed) return;
+      if (!renderFrame(timestamp)) return;
+      scheduleAnimation();
     };
     const startAnimation = () => {
+      if (rendererFailed) return;
       if (!continuousAnimation) {
         if (inViewport && pageVisible) renderFrame();
         return;
       }
-      if (!animationFrame && inViewport && pageVisible) {
-        animationFrame = window.requestAnimationFrame(animate);
-      }
+      scheduleAnimation();
     };
     const stopAnimation = () => {
-      if (!animationFrame) return;
-      window.cancelAnimationFrame(animationFrame);
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      if (animationTimer) window.clearTimeout(animationTimer);
       animationFrame = 0;
+      animationTimer = 0;
     };
+    cleanups.push(stopAnimation);
     const handleVisibility = () => {
       pageVisible = !document.hidden;
       if (pageVisible) startAnimation();
       else stopAnimation();
     };
     document.addEventListener("visibilitychange", handleVisibility);
+    cleanups.push(() => document.removeEventListener("visibilitychange", handleVisibility));
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      failRendering();
+    };
+    renderer.domElement.addEventListener("webglcontextlost", handleContextLost);
+    cleanups.push(() => renderer.domElement.removeEventListener("webglcontextlost", handleContextLost));
+
+    const handleEnvironmentChange = () => {
+      setRetryVersion((current) => current + 1);
+    };
+    const listenForMediaChange = (query: MediaQueryList) => {
+      if (typeof query.addEventListener === "function") {
+        query.addEventListener("change", handleEnvironmentChange);
+        cleanups.push(() => query.removeEventListener("change", handleEnvironmentChange));
+      } else {
+        query.addListener(handleEnvironmentChange);
+        cleanups.push(() => query.removeListener(handleEnvironmentChange));
+      }
+    };
+    listenForMediaChange(motionQuery);
+    listenForMediaChange(smallScreenQuery);
 
     const intersectionObserver = typeof IntersectionObserver === "undefined"
       ? null
@@ -294,41 +409,57 @@ export function Avatar3D({
           if (inViewport) startAnimation();
           else stopAnimation();
         }, { rootMargin: "120px" });
-    intersectionObserver?.observe(mount);
-    renderFrame();
-    startAnimation();
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (!mount.clientWidth || !mount.clientHeight) return;
-      const nextWidth = mount.clientWidth;
-      const nextHeight = mount.clientHeight;
-      camera.aspect = nextWidth / nextHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(nextWidth, nextHeight);
-      if (!animationFrame) renderFrame();
-    });
-    resizeObserver.observe(mount);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      intersectionObserver?.disconnect();
-      resizeObserver.disconnect();
-      controls.removeEventListener("change", handleControlsChange);
-      controls.dispose();
-      renderer.dispose();
-      scene.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry.dispose();
-          const materials = Array.isArray(object.material) ? object.material : [object.material];
-          materials.forEach((item) => item.dispose());
-        }
-      });
-      mount.replaceChildren();
-      cameraRef.current = null;
-      controlsRef.current = null;
+    if (intersectionObserver) {
+      intersectionObserver.observe(mount);
+      cleanups.push(() => intersectionObserver.disconnect());
+    }
+    const handleResize = () => {
+      if (tornDown || rendererFailed || !mount.clientWidth || !mount.clientHeight) return;
+      try {
+        const nextWidth = mount.clientWidth;
+        const nextHeight = mount.clientHeight;
+        camera.aspect = nextWidth / nextHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(nextWidth, nextHeight);
+        if (!animationFrame && !animationTimer) renderFrame();
+      } catch {
+        failRendering();
+      }
     };
-  }, [sceneMetrics, sceneOutfit, compact]);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(handleResize);
+    if (resizeObserver) {
+      resizeObserver.observe(mount);
+      cleanups.push(() => resizeObserver.disconnect());
+    } else {
+      window.addEventListener("resize", handleResize);
+      cleanups.push(() => window.removeEventListener("resize", handleResize));
+    }
+
+    if (renderFrame()) {
+      renderer.shadowMap.autoUpdate = false;
+      const successTimer = window.setTimeout(() => {
+        setRenderFailed(false);
+        if (focusOnReadyRef.current) {
+          focusOnReadyRef.current = false;
+          window.requestAnimationFrame(() => viewSwitcherRef.current?.focus());
+        }
+      }, 0);
+      cleanups.push(() => window.clearTimeout(successTimer));
+      startAnimation();
+    }
+
+    return teardown;
+    } catch {
+      teardown();
+      const failureTimer = window.setTimeout(() => setRenderFailed(true), 0);
+      return () => {
+        window.clearTimeout(failureTimer);
+        teardown();
+      };
+    }
+  }, [sceneMetrics, sceneOutfit, compact, retryVersion]);
 
   useEffect(() => {
     const camera = cameraRef.current;
@@ -339,11 +470,34 @@ export function Avatar3D({
     controls.update();
   }, [cameraView]);
 
+  useEffect(() => {
+    if (renderFailed || !focusAfterRetryRef.current) return;
+    focusAfterRetryRef.current = false;
+    const frame = window.requestAnimationFrame(() => viewSwitcherRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [renderFailed]);
+
   return (
     <div className={`avatar-stage ${compact ? "avatar-stage--compact" : ""}`}>
-      <div ref={mountRef} className="avatar-canvas" />
+      <div ref={mountRef} className={`avatar-canvas ${renderFailed ? "avatar-canvas--hidden" : ""}`} />
       <div className="avatar-glow" aria-hidden="true" />
-      <div className="view-switcher" aria-label="切换分身视角">
+      {renderFailed ? (
+        <div className="avatar-unavailable" role="status">
+          <span aria-hidden="true">◎</span>
+          <strong>这台设备暂时无法显示 3D</strong>
+          <p>衣橱、身材参数和搭配仍可继续使用。</p>
+          <button
+            type="button"
+            className="button button--soft"
+            onClick={() => {
+              focusAfterRetryRef.current = true;
+              setRetryVersion((current) => current + 1);
+            }}
+          >
+            重试 3D
+          </button>
+        </div>
+      ) : <><div ref={viewSwitcherRef} className="view-switcher" role="group" aria-label="三维分身已加载，可切换视角" tabIndex={-1}>
         {(
           [
             ["front", "正面"],
@@ -366,7 +520,7 @@ export function Avatar3D({
           </button>
         ))}
       </div>
-      <p className="avatar-hint">拖动旋转 · 滚轮缩放</p>
+      <p className="avatar-hint">拖动旋转 · 滚轮缩放</p></>}
     </div>
   );
 }

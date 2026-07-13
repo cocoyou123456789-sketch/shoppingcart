@@ -21,6 +21,6 @@ export async function GET(request: Request) {
     headers.set("etag", object.httpEtag);
     return new Response(object.body, { headers });
   } catch {
-    return new Response("Image unavailable", { status: 404 });
+    return new Response("Image temporarily unavailable", { status: 503 });
   }
 }

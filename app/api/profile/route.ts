@@ -43,8 +43,8 @@ export async function GET(request: Request) {
         bodyShape: row.body_shape,
       },
     });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to load profile" }, { status: 500 });
+  } catch {
+    return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }
 }
 
@@ -52,7 +52,18 @@ export async function PUT(request: Request) {
   try {
     const owner = ownerForRequest(request);
     if (!owner) return unauthorizedJson();
-    const payload = (await request.json()) as Record<string, unknown>;
+    if (!request.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+      return Response.json({ error: "JSON is required" }, { status: 415 });
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return Response.json({ error: "invalid JSON" }, { status: 400 });
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return Response.json({ error: "profile must be a JSON object" }, { status: 400 });
+    }
     const ranges: Record<string, [number, number]> = {
       height: [140, 210], weight: [30, 180], shoulder: [25, 70], chest: [55, 180],
       waist: [45, 180], hips: [55, 190], torso: [35, 70], legs: [55, 115],
@@ -86,7 +97,7 @@ export async function PUT(request: Request) {
       )
       .run();
     return Response.json({ saved: true });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to save profile" }, { status: 500 });
+  } catch {
+    return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }
 }
