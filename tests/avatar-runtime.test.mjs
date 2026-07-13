@@ -10,10 +10,24 @@ import {
   cancelVisibleTimeBudget,
   createVisibleTimeBudget,
   disposeUniqueResources,
+  isActiveAvatarRuntime,
   pauseVisibleTimeBudget,
   replaceRuntimeAvatar,
   resumeVisibleTimeBudget,
 } from "../app/lib/avatar-runtime.mjs";
+
+test("only the current live avatar runtime may render or commit readiness", () => {
+  const activeRuntime = { disposed: false };
+  const oldRuntime = { disposed: false };
+
+  assert.equal(isActiveAvatarRuntime(activeRuntime, activeRuntime), true);
+  assert.equal(isActiveAvatarRuntime(activeRuntime, null), false, "setup has not committed");
+  assert.equal(isActiveAvatarRuntime(activeRuntime, oldRuntime), false, "a retry superseded it");
+  assert.equal(isActiveAvatarRuntime(activeRuntime, activeRuntime, true), false, "teardown began");
+
+  activeRuntime.disposed = true;
+  assert.equal(isActiveAvatarRuntime(activeRuntime, activeRuntime), false, "resources were disposed");
+});
 
 test("avatar updates preserve the renderer and dispose only the replaced model", () => {
   const calls = [];

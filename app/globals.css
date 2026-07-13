@@ -817,7 +817,7 @@ h3 {
 
 .mood-control span {
   color: rgba(255, 255, 255, 0.58);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .mood-control b {
@@ -831,8 +831,11 @@ input[type="range"] {
 
 .mood-control input[type="range"] {
   background: linear-gradient(to right, var(--coral) var(--mood-value), rgba(255,255,255,.14) var(--mood-value));
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 4px;
   border-radius: 999px;
-  height: 4px;
+  height: 24px;
   margin: 0;
   appearance: none;
 }
@@ -894,7 +897,7 @@ input[type="range"] {
 .mini-item > span {
   background: rgba(255, 253, 249, 0.9);
   bottom: 7px;
-  font-size: 9px;
+  font-size: 10px;
   left: 7px;
   overflow: hidden;
   padding: 6px 8px;
@@ -1199,11 +1202,11 @@ input[type="range"] {
 
 .virtual-pill,
 .source-pill {
-  background: rgba(255, 253, 249, 0.84);
+  background: #fffdf9;
   border: 1px solid rgba(75, 64, 61, 0.1);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   left: 14px;
   padding: 6px 9px;
   position: absolute;
@@ -1239,7 +1242,7 @@ input[type="range"] {
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 9px;
+  font-size: 10px;
   gap: 6px;
   letter-spacing: 0.05em;
 }
@@ -1285,13 +1288,13 @@ input[type="range"] {
 
 .product-bottom strong small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
 }
 
 .product-bottom > span {
   color: var(--sage-dark);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .product-actions {
@@ -1706,7 +1709,7 @@ input[type="range"] {
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 9px;
+  font-size: 11px;
   gap: 7px;
 }
 
@@ -1721,18 +1724,18 @@ input[type="range"] {
 
 .confidence-line span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .confidence {
   border-radius: 999px;
-  font-size: 8px;
+  font-size: 10px;
   padding: 4px 7px;
 }
 
 .confidence--high { background: #dae5d6; color: #586653; }
-.confidence--mid { background: #ede1c9; color: #806a40; }
-.confidence--low { background: #edd9d3; color: #87594d; }
+.confidence--mid { background: #ede1c9; color: #705b32; }
+.confidence--low { background: #edd9d3; color: #735046; }
 
 .wardrobe-info .button {
   font-size: 11px;
@@ -3183,7 +3186,7 @@ input[type="range"] {
     color: var(--muted);
     display: flex;
     flex-direction: column;
-    font-size: 8px;
+    font-size: 10px;
     gap: 2px;
     min-height: 44px;
     padding: 5px;
@@ -3296,6 +3299,11 @@ input[type="range"] {
   .cart-list article > button,
   .skin-row button {
     min-width: 44px;
+  }
+
+  .mood-control input[type="range"],
+  .body-slider input {
+    min-height: 44px;
   }
 }
 

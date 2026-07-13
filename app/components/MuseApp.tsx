@@ -5,9 +5,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 import { DeferredAvatar } from "./DeferredAvatar";
-import { extractGarmentMeasurements } from "../lib/garment-analysis.mjs";
 import { rankOutfitSelections } from "../lib/outfit-ranking.mjs";
-import { preservePersistedPhotos } from "../lib/device-storage.mjs";
+import { createSerialLatestQueue } from "../lib/serial-latest-queue.mjs";
+import {
+  deviceGenerationAction,
+  guardKnownDeviceSnapshotWrite,
+  hasUnsupportedDeviceSnapshotVersion,
+  parseDeviceSnapshot,
+  preservePersistedPhotos,
+  readDeviceSnapshotEnvelope,
+  resolveHydratedProfile,
+  restoreItemsInStoredOrder,
+  serializeDeviceSnapshot,
+} from "../lib/device-storage.mjs";
 import {
   avatarOutfitFromSelection,
   createVirtualWardrobeItem,
@@ -69,16 +79,28 @@ type LocalSnapshot = {
   cloudGeneration?: string;
   deletedWardrobeClientIds?: string[];
   dailyPreferences?: DailyPreferences;
+  profilePending?: boolean;
   clearSignal?: string;
   updatedAt?: string;
 };
 
 type DeviceSaveResult = "complete" | "metadata-only" | "failed";
-type GuardedDeviceSaveResult = DeviceSaveResult | "superseded";
+type GuardedDeviceSaveResult = DeviceSaveResult | "superseded" | "incompatible";
 type DataMode = "连接中" | "云端已同步" | "部分已同步" | "本机已保存" | "仅本次有效";
 type PendingCloudMutation = {
   promise: Promise<Response>;
   controller: AbortController;
+};
+type ProfileSaveJob = {
+  metrics: BodyMetrics;
+  editGeneration: number;
+  requestEpoch: number;
+};
+type ProfileSaveQueue = {
+  enqueue: (job: ProfileSaveJob) => Promise<void>;
+  clear: () => void;
+  readonly running: boolean;
+  readonly pending: boolean;
 };
 
 const NAV_ITEMS: { id: View; label: string; short: string; icon: string }[] = [
@@ -229,8 +251,7 @@ function localSnapshotKey(storageOwner?: string) {
 }
 
 function productsForIds(ids: string[] = []) {
-  const wanted = new Set(ids);
-  return PRODUCTS.filter((product) => wanted.has(product.id));
+  return restoreItemsInStoredOrder(ids, PRODUCTS) as Product[];
 }
 
 function mergeWardrobe(...collections: WardrobeItem[][]) {
@@ -275,7 +296,8 @@ function readLocalSnapshot(storageKey: string, activeClearSignal: string | null)
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<LocalSnapshot>;
+    const parsed = parseDeviceSnapshot(raw) as Partial<LocalSnapshot> | null;
+    if (!parsed) return null;
     if (!snapshotMatchesClearSignal(parsed.clearSignal, activeClearSignal)) return null;
     if (!Array.isArray(parsed.wardrobe) || !parsed.metrics || typeof parsed.metrics !== "object") {
       return null;
@@ -323,6 +345,9 @@ function readLocalSnapshot(storageKey: string, activeClearSignal: string | null)
           )
         : undefined,
       dailyPreferences: normalizeDailyPreferences(parsed.dailyPreferences),
+      profilePending: typeof parsed.profilePending === "boolean"
+        ? parsed.profilePending
+        : undefined,
       clearSignal: parsed.clearSignal,
       updatedAt: parsed.updatedAt,
     };
@@ -344,28 +369,43 @@ function writeLocalSnapshot(
     cloudGeneration,
     deletedWardrobeClientIds,
     dailyPreferences,
+    profilePending,
   }: Omit<LocalSnapshot, "version" | "updatedAt">,
   clearSignal: string | null,
-): DeviceSaveResult {
+  allowIncompatibleOverwrite = false,
+): DeviceSaveResult | "incompatible" {
   const updatedAt = new Date().toISOString();
-  const serialize = (snapshotWardrobe: WardrobeItem[]) => JSON.stringify({
-      version: 1,
-      wardrobe: snapshotWardrobe,
-      metrics,
-      outfit,
-      mood,
-      cartProductIds,
-      savedProductIds,
-      cloudItemIds,
-      cloudGeneration,
-      deletedWardrobeClientIds,
-      dailyPreferences,
-      clearSignal: clearSignal ?? undefined,
+  const serialize = (snapshotWardrobe: WardrobeItem[]) =>
+    serializeDeviceSnapshot(
+      {
+        wardrobe: snapshotWardrobe,
+        metrics,
+        outfit,
+        mood,
+        cartProductIds,
+        savedProductIds,
+        cloudItemIds,
+        cloudGeneration,
+        deletedWardrobeClientIds,
+        dailyPreferences,
+        profilePending,
+      },
+      clearSignal,
       updatedAt,
-    });
+    );
   try {
-    window.localStorage.setItem(storageKey, serialize(wardrobe));
-    return "complete";
+    if (allowIncompatibleOverwrite) {
+      window.localStorage.setItem(storageKey, serialize(wardrobe));
+      return "complete";
+    }
+    const guardedResult = guardKnownDeviceSnapshotWrite(
+      () => window.localStorage.getItem(storageKey),
+      () => {
+        window.localStorage.setItem(storageKey, serialize(wardrobe));
+        return "complete" as const;
+      },
+    );
+    return guardedResult === "unavailable" ? "failed" : guardedResult;
   } catch {
     let previousRaw: string | null = null;
     try {
@@ -375,8 +415,18 @@ function writeLocalSnapshot(
     }
     const safeFallback = preservePersistedPhotos(wardrobe, previousRaw);
     try {
-      window.localStorage.setItem(storageKey, serialize(safeFallback));
-      return "metadata-only";
+      if (allowIncompatibleOverwrite) {
+        window.localStorage.setItem(storageKey, serialize(safeFallback));
+        return "metadata-only";
+      }
+      const guardedResult = guardKnownDeviceSnapshotWrite(
+        () => window.localStorage.getItem(storageKey),
+        () => {
+          window.localStorage.setItem(storageKey, serialize(safeFallback));
+          return "metadata-only" as const;
+        },
+      );
+      return guardedResult === "unavailable" ? "failed" : guardedResult;
     } catch {
       // Leave the previous snapshot untouched instead of deleting already-saved photos.
       return "failed";
@@ -406,7 +456,8 @@ function isClearedLocalSnapshot(storageKey: string) {
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (raw === null) return true;
-    const parsed = JSON.parse(raw) as Partial<LocalSnapshot>;
+    const parsed = parseDeviceSnapshot(raw) as Partial<LocalSnapshot> | null;
+    if (!parsed) return false;
     const metrics = parsed.metrics as Partial<BodyMetrics> | undefined;
     const outfit = parsed.outfit ?? {};
     const dailyPreferences = normalizeDailyPreferences(parsed.dailyPreferences);
@@ -430,7 +481,8 @@ function isClearedLocalSnapshot(storageKey: string) {
       Boolean(dailyPreferences) &&
       Object.entries(DEFAULT_DAILY_PREFERENCES).every(
         ([key, value]) => dailyPreferences?.[key as keyof DailyPreferences] === value,
-      )
+      ) &&
+      parsed.profilePending !== true
     );
   } catch {
     return false;
@@ -606,10 +658,13 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const [dataMode, setDataMode] = useState<DataMode>("连接中");
   const [ready, setReady] = useState(false);
   const [clearingData, setClearingData] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [wardrobeSyncAttempt, setWardrobeSyncAttempt] = useState(0);
   const hydrated = useRef(false);
   const storageWarningShown = useRef(false);
   const storageFailureShown = useRef(false);
+  const incompatibleSnapshotWarningShown = useRef(false);
+  const incompatibleSnapshot = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const dialogOpenerRef = useRef<HTMLElement | null>(null);
   const previousView = useRef<View>(view);
@@ -624,6 +679,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const pendingWardrobeDeletionIds = useRef(new Set<string>());
   const wardrobeCloudReady = useRef(false);
   const profileCloudReady = useRef(false);
+  const profilePending = useRef(false);
+  const profileEditGeneration = useRef(0);
+  const profileSaveQueue = useRef<ProfileSaveQueue | null>(null);
   const cloudGeneration = useRef("initial");
   const deletedWardrobeClientIds = useRef(new Set<string>());
   const latestSnapshot = useRef<Omit<LocalSnapshot, "version" | "updatedAt">>({
@@ -637,6 +695,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cloudGeneration: "initial",
     deletedWardrobeClientIds: [],
     dailyPreferences,
+    profilePending: false,
   });
   latestSnapshot.current = {
     wardrobe,
@@ -649,6 +708,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cloudGeneration: cloudGeneration.current,
     deletedWardrobeClientIds: [...deletedWardrobeClientIds.current],
     dailyPreferences,
+    profilePending: profilePending.current,
   };
   cartProductIds.current = new Set(cart.map((product) => product.id));
 
@@ -691,18 +751,30 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       cloudGeneration: cloudGeneration.current,
       deletedWardrobeClientIds: [],
       dailyPreferences: DEFAULT_DAILY_PREFERENCES,
+      profilePending: false,
     };
+  }
+
+  function profileNeedsSync() {
+    return (
+      profilePending.current ||
+      !profileCloudReady.current ||
+      incompatibleSnapshot.current
+    );
   }
 
   const writeCurrentLocalSnapshot = useCallback(function writeCurrentLocalSnapshot(
     snapshot = latestSnapshot.current,
   ): GuardedDeviceSaveResult {
+    if (incompatibleSnapshot.current) return "incompatible";
     const activeSignal = readActiveClearSignal(storageKey);
-    return guardedSnapshotWrite(
+    const result = guardedSnapshotWrite(
       observedClearSignal.current,
       activeSignal,
       () => writeLocalSnapshot(storageKey, snapshot, activeSignal),
     );
+    if (result === "incompatible") incompatibleSnapshot.current = true;
+    return result;
   }, [storageKey]);
 
   const adoptStaleCloudGeneration = useCallback(function adoptStaleCloudGeneration(response: Response) {
@@ -711,12 +783,15 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     if (!generation || generation === cloudGeneration.current) return false;
     cloudGeneration.current = generation;
     mutationEpoch.current += 1;
+    profileSaveQueue.current?.clear();
     pendingCloudMutations.current.forEach((mutation) => mutation.controller.abort());
     pendingWardrobeSyncIds.current.clear();
     pendingWardrobeDeletionIds.current.clear();
     deletedWardrobeClientIds.current.clear();
     wardrobeCloudReady.current = false;
     profileCloudReady.current = false;
+    profilePending.current = false;
+    incompatibleSnapshot.current = false;
     cloudItemIds.current.clear();
     cartProductIds.current.clear();
     latestSnapshot.current = emptyPersonalSnapshot();
@@ -759,12 +834,15 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       observedClearSignal.current = signal;
       lastAppliedClearSignal.current = signal;
       mutationEpoch.current += 1;
+      profileSaveQueue.current?.clear();
       pendingCloudMutations.current.forEach((mutation) => mutation.controller.abort());
       pendingWardrobeSyncIds.current.clear();
       pendingWardrobeDeletionIds.current.clear();
       deletedWardrobeClientIds.current.clear();
       wardrobeCloudReady.current = false;
       profileCloudReady.current = false;
+      profilePending.current = false;
+      incompatibleSnapshot.current = false;
       cloudItemIds.current.clear();
       cartProductIds.current.clear();
       const emptySnapshot = emptyPersonalSnapshot();
@@ -792,7 +870,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       const localCleared =
         markerSaved &&
         (localRemoved ||
-          (saveResult !== "failed" && saveResult !== "superseded") ||
+          (
+            saveResult !== "failed" &&
+            saveResult !== "superseded" &&
+            saveResult !== "incompatible"
+          ) ||
           isClearedLocalSnapshot(storageKey));
       setDataMode(
         usesDeviceOnlyStorage()
@@ -847,6 +929,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             cloudGeneration.current = message.cloudGeneration;
             wardrobeCloudReady.current = true;
             profileCloudReady.current = true;
+            profilePending.current = false;
             const hasPending =
               deletedWardrobeClientIds.current.size > 0 ||
               hasPendingWardrobeItems(latestSnapshot.current.wardrobe, cloudItemIds.current);
@@ -861,6 +944,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             cloudGeneration.current = message.cloudGeneration;
             wardrobeCloudReady.current = false;
             profileCloudReady.current = false;
+            profilePending.current = false;
             latestSnapshot.current = {
               ...emptyPersonalSnapshot(),
               cloudGeneration: message.cloudGeneration,
@@ -896,9 +980,21 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     const hydrationEpoch = mutationEpoch.current;
     wardrobeCloudReady.current = false;
     profileCloudReady.current = false;
+    let snapshotEnvelope: ReturnType<typeof readDeviceSnapshotEnvelope> = null;
+    try {
+      const rawSnapshot = window.localStorage.getItem(storageKey);
+      incompatibleSnapshot.current = hasUnsupportedDeviceSnapshotVersion(rawSnapshot);
+      if (incompatibleSnapshot.current) {
+        snapshotEnvelope = readDeviceSnapshotEnvelope(rawSnapshot);
+      }
+    } catch {
+      incompatibleSnapshot.current = false;
+    }
     let local = readLocalSnapshot(storageKey, observedClearSignal.current);
+    profilePending.current = local?.profilePending === true;
     let storedCloudItemIds = new Set(local?.cloudItemIds ?? []);
-    cloudGeneration.current = local?.cloudGeneration ?? "initial";
+    cloudGeneration.current =
+      local?.cloudGeneration ?? snapshotEnvelope?.cloudGeneration ?? "initial";
     deletedWardrobeClientIds.current = new Set(local?.deletedWardrobeClientIds ?? []);
     cloudItemIds.current = new Set(storedCloudItemIds);
     const hydrateDeviceState = () => {
@@ -918,7 +1014,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       if (deviceSnapshot?.savedProductIds) {
         setSavedProductIds((current) => [...new Set([...deviceSnapshot.savedProductIds!, ...current])]);
       }
-      setDataMode("本机已保存");
+      setDataMode(incompatibleSnapshot.current ? "仅本次有效" : "本机已保存");
+      if (incompatibleSnapshot.current && !incompatibleSnapshotWarningShown.current) {
+        incompatibleSnapshotWarningShown.current = true;
+        setToast("发现由新版松松逛保存的本机资料；当前版本不会覆盖它");
+      }
       hydrated.current = true;
       setReady(true);
     };
@@ -959,10 +1059,17 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         : profileResult.status === "fulfilled"
           ? profileResult.value.generation
           : undefined;
-      if (serverGeneration && serverGeneration !== cloudGeneration.current) {
+      const generationAction = deviceGenerationAction(
+        cloudGeneration.current,
+        serverGeneration,
+        incompatibleSnapshot.current,
+      );
+      if (generationAction === "reset-known" && serverGeneration) {
         const nextClearSignal = createClearSignal();
         const marker = serializeClearMarker(nextClearSignal);
         local = null;
+        profilePending.current = false;
+        incompatibleSnapshot.current = false;
         storedCloudItemIds = new Set();
         deletedWardrobeClientIds.current.clear();
         cloudGeneration.current = serverGeneration;
@@ -1047,14 +1154,43 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       } else if (hydratedLocal) {
         setWardrobe(hydratedLocal.wardrobe);
       }
-      if (profileResult.status === "fulfilled" && profileResult.value.profile) {
+      if (profileResult.status === "fulfilled") {
         profileCloudReady.current = true;
-        const profile = profileResult.value.profile;
-        setMetrics((current) => ({ ...current, ...profile }));
-      } else if (profileResult.status === "fulfilled") {
-        profileCloudReady.current = true;
+        const resolvedProfile = resolveHydratedProfile({
+          defaults: DEFAULT_METRICS,
+          local: hydratedLocal?.metrics,
+          cloud: profileResult.value.profile,
+          profilePending: hydratedLocal?.profilePending,
+        }) as {
+          metrics: BodyMetrics;
+          profilePending: boolean;
+        };
+        profilePending.current = resolvedProfile.profilePending;
+        setMetrics(resolvedProfile.metrics);
+        if (
+          resolvedProfile.profilePending &&
+          hydratedLocal?.profilePending !== true
+        ) {
+          setToast("保留了尚未确认同步的本机分身参数；请在试穿间确认保存");
+        }
       } else if (hydratedLocal?.metrics) {
-        setMetrics((current) => ({ ...current, ...hydratedLocal.metrics }));
+        const resolvedProfile = resolveHydratedProfile({
+          defaults: DEFAULT_METRICS,
+          local: hydratedLocal.metrics,
+          cloud: null,
+          profilePending: hydratedLocal.profilePending,
+        }) as {
+          metrics: BodyMetrics;
+          profilePending: boolean;
+        };
+        profilePending.current = resolvedProfile.profilePending;
+        setMetrics(resolvedProfile.metrics);
+        if (
+          resolvedProfile.profilePending &&
+          hydratedLocal.profilePending !== true
+        ) {
+          setToast("保留了尚未确认同步的本机分身参数；请在试穿间确认保存");
+        }
       }
       if (hydratedLocal?.outfit) setOutfit(hydratedLocal.outfit);
       if (typeof hydratedLocal?.mood === "number") setMood(hydratedLocal.mood);
@@ -1083,7 +1219,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       );
       const hasQueuedDeletion = deletedWardrobeClientIds.current.size > 0;
       setDataMode(
-        successCount === 2 && !hasPendingWardrobe && !hasQueuedDeletion
+        successCount === 2 &&
+          !hasPendingWardrobe &&
+          !hasQueuedDeletion &&
+          !profileNeedsSync() &&
+          !incompatibleSnapshot.current
           ? "云端已同步"
           : successCount >= 1
             ? "部分已同步"
@@ -1154,7 +1294,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             deletedWardrobeClientIds.current.size > 0 ||
             hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
           setDataMode(
-            stillPending || !profileCloudReady.current
+            stillPending || profileNeedsSync()
               ? "部分已同步"
               : "云端已同步",
           );
@@ -1215,7 +1355,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
               deletedWardrobeClientIds.current.size > 0 ||
               hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
             setDataMode(
-              stillPending || !profileCloudReady.current
+              stillPending || profileNeedsSync()
                 ? "部分已同步"
                 : "云端已同步",
             );
@@ -1258,7 +1398,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           deletedWardrobeClientIds.current.size > 0 ||
           hasPendingWardrobeItems(reconciled.wardrobe, cloudItemIds.current);
         setDataMode(
-          stillPending || !profileCloudReady.current
+          stillPending || profileNeedsSync()
             ? "部分已同步"
             : "云端已同步",
         );
@@ -1283,6 +1423,18 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     const timer = window.setTimeout(() => {
       const result = writeCurrentLocalSnapshot();
       if (result === "superseded") return;
+      if (result === "incompatible") {
+        setDataMode((current) =>
+          current === "云端已同步" || current === "部分已同步"
+            ? "部分已同步"
+            : "仅本次有效",
+        );
+        if (!incompatibleSnapshotWarningShown.current) {
+          incompatibleSnapshotWarningShown.current = true;
+          setToast("发现由新版松松逛保存的本机资料；当前版本不会覆盖它");
+        }
+        return;
+      }
       if (result === "failed") {
         if (dataMode === "云端已同步" || dataMode === "部分已同步") {
           setDataMode("部分已同步");
@@ -1361,7 +1513,26 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   function updateMetrics(action: React.SetStateAction<BodyMetrics>) {
-    setMetrics(action);
+    const pendingCloudSave = !usesDeviceOnlyStorage();
+    const currentMetrics = latestSnapshot.current.metrics;
+    const nextMetrics = typeof action === "function"
+      ? action(currentMetrics)
+      : action;
+    profilePending.current = pendingCloudSave;
+    profileEditGeneration.current += 1;
+    latestSnapshot.current = {
+      ...latestSnapshot.current,
+      metrics: nextMetrics,
+      profilePending: pendingCloudSave,
+    };
+    setMetrics(nextMetrics);
+    if (pendingCloudSave && profileSaveQueue.current?.running) {
+      profileSaveQueue.current.enqueue({
+        metrics: nextMetrics,
+        editGeneration: profileEditGeneration.current,
+        requestEpoch: mutationEpoch.current,
+      });
+    }
     markLocalChange();
   }
 
@@ -1494,7 +1665,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         deletedWardrobeClientIds.current.size > 0 ||
         hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
       setDataMode(
-        hasPendingWardrobe || !profileCloudReady.current
+        hasPendingWardrobe || profileNeedsSync()
           ? "部分已同步"
           : "云端已同步",
       );
@@ -1527,39 +1698,129 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     setMood((current) => Math.min(100, current + 11));
   }
 
-  async function saveMetrics() {
-    if (usesDeviceOnlyStorage()) {
-      setDataMode("本机已保存");
-      setToast("分身参数已保存在这台设备");
-      return;
+  function getProfileSaveQueue() {
+    if (!profileSaveQueue.current) {
+      profileSaveQueue.current = createSerialLatestQueue(executeProfileSave);
     }
-    const requestEpoch = mutationEpoch.current;
+    return profileSaveQueue.current;
+  }
+
+  function queueProfileSave(job: ProfileSaveJob) {
+    const queue = getProfileSaveQueue();
+    const wasRunning = queue.running;
+    const completed = queue.enqueue(job);
+    if (!wasRunning) {
+      setProfileSaving(true);
+      void completed.finally(() => setProfileSaving(false));
+    }
+    return completed;
+  }
+
+  async function executeProfileSave(job: ProfileSaveJob) {
+    if (mutationEpoch.current !== job.requestEpoch) return false;
+    profilePending.current = true;
+    latestSnapshot.current = {
+      ...latestSnapshot.current,
+      profilePending: true,
+    };
     try {
       const response = await fetchCloudMutation(
         "/api/profile",
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(metrics),
+          body: JSON.stringify(job.metrics),
         },
       );
-      if (mutationEpoch.current !== requestEpoch) return;
+      if (mutationEpoch.current !== job.requestEpoch) return false;
       if (!response.ok) {
-        if (adoptStaleCloudGeneration(response)) return;
+        if (adoptStaleCloudGeneration(response)) return false;
         throw new Error();
       }
       profileCloudReady.current = true;
+      const savedLatestProfile = profileEditGeneration.current === job.editGeneration;
+      if (savedLatestProfile) {
+        profilePending.current = false;
+        latestSnapshot.current = {
+          ...latestSnapshot.current,
+          metrics: job.metrics,
+          profilePending: false,
+        };
+      }
+      const deviceSaveResult = writeCurrentLocalSnapshot(latestSnapshot.current);
       const hasPendingWardrobe =
         deletedWardrobeClientIds.current.size > 0 ||
         hasPendingWardrobeItems(latestSnapshot.current.wardrobe, cloudItemIds.current);
-      setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
-      setToast(hasPendingWardrobe ? "分身参数已保存；仍有衣橱变更等待同步" : "分身参数已安心保存");
+      const deviceSaveIncomplete =
+        deviceSaveResult === "failed" || deviceSaveResult === "incompatible";
+      const stillPending =
+        hasPendingWardrobe || profilePending.current || deviceSaveIncomplete;
+      setDataMode(stillPending ? "部分已同步" : "云端已同步");
+      setToast(
+        deviceSaveResult === "incompatible"
+          ? "云端分身已保存；当前版本不会覆盖由新版保存的本机资料"
+          : deviceSaveResult === "failed"
+            ? "云端分身已保存，但浏览器没有更新本机副本"
+            : profilePending.current
+              ? "已保存刚才的参数；最新调整正在排队保存"
+              : hasPendingWardrobe
+                ? "分身参数已保存；仍有衣橱变更等待同步"
+                : "分身参数已安心保存",
+      );
+      return true;
     } catch {
-      if (mutationEpoch.current !== requestEpoch) return;
+      if (mutationEpoch.current !== job.requestEpoch) return false;
       profileCloudReady.current = false;
+      profilePending.current = true;
+      latestSnapshot.current = {
+        ...latestSnapshot.current,
+        profilePending: true,
+      };
+      const deviceSaveResult = writeCurrentLocalSnapshot(latestSnapshot.current);
       setDataMode("部分已同步");
-      setToast("分身参数已保存在这台设备");
+      setToast(
+        deviceSaveResult === "incompatible"
+          ? "云端暂未保存；当前版本也不会覆盖由新版保存的本机资料"
+          : deviceSaveResult === "failed"
+            ? "暂时无法保存分身参数，请检查浏览器存储和网络"
+            : "分身参数已保存在这台设备",
+      );
+      return false;
     }
+  }
+
+  async function saveMetrics() {
+    if (usesDeviceOnlyStorage()) {
+      profilePending.current = false;
+      latestSnapshot.current = {
+        ...latestSnapshot.current,
+        metrics,
+        profilePending: false,
+      };
+      const deviceSaveResult = writeCurrentLocalSnapshot(latestSnapshot.current);
+      if (deviceSaveResult === "incompatible") {
+        setDataMode("仅本次有效");
+        setToast("当前分身仅在本页生效；这个版本不会覆盖由新版保存的本机资料");
+      } else if (deviceSaveResult === "failed") {
+        setDataMode("仅本次有效");
+        setToast("浏览器阻止了本机保存，当前分身会保留到页面关闭");
+      } else {
+        setDataMode("本机已保存");
+        setToast("分身参数已保存在这台设备");
+      }
+      return;
+    }
+    profilePending.current = true;
+    latestSnapshot.current = {
+      ...latestSnapshot.current,
+      profilePending: true,
+    };
+    writeCurrentLocalSnapshot(latestSnapshot.current);
+    await queueProfileSave({
+      metrics: latestSnapshot.current.metrics,
+      editGeneration: profileEditGeneration.current,
+      requestEpoch: mutationEpoch.current,
+    });
   }
 
   async function addWardrobeItem(item: WardrobeItem, photo?: File): Promise<string | null> {
@@ -1620,7 +1881,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           deletedWardrobeClientIds.current.size > 0 ||
           hasPendingWardrobeItems(wardrobe, cloudItemIds.current);
         setDataMode(
-          hasPendingWardrobe || !profileCloudReady.current
+          hasPendingWardrobe || profileNeedsSync()
             ? "部分已同步"
             : "云端已同步",
         );
@@ -1679,12 +1940,16 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     lastAppliedClearSignal.current = nextClearSignal;
 
     mutationEpoch.current += 1;
+    profileSaveQueue.current?.clear();
     const pendingMutations = [...pendingCloudMutations.current];
     pendingWardrobeSyncIds.current.clear();
     pendingWardrobeDeletionIds.current.clear();
     deletedWardrobeClientIds.current.clear();
     wardrobeCloudReady.current = false;
     profileCloudReady.current = false;
+    profilePending.current = false;
+    profileEditGeneration.current += 1;
+    incompatibleSnapshot.current = false;
     cloudItemIds.current.clear();
     cartProductIds.current.clear();
     latestSnapshot.current = emptySnapshot;
@@ -1710,9 +1975,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       setClearingData(true);
     });
 
-    const saveResult = writeLocalSnapshot(storageKey, emptySnapshot, nextClearSignal);
+    const saveResult = writeLocalSnapshot(storageKey, emptySnapshot, nextClearSignal, true);
     const legacySaveResult = storageKey !== LOCAL_SNAPSHOT_KEY && !legacyRemoved
-      ? writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, emptySnapshot, nextClearSignal)
+      ? writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, emptySnapshot, nextClearSignal, true)
       : null;
     const currentCleared =
       currentMarkerSaved &&
@@ -1765,9 +2030,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           cloudGeneration.current = authoritativeGeneration;
           const refreshedSnapshot = { ...emptySnapshot, cloudGeneration: authoritativeGeneration };
           latestSnapshot.current = refreshedSnapshot;
-          writeLocalSnapshot(storageKey, refreshedSnapshot, nextClearSignal);
+          writeLocalSnapshot(storageKey, refreshedSnapshot, nextClearSignal, true);
           if (storageKey !== LOCAL_SNAPSHOT_KEY) {
-            writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, refreshedSnapshot, nextClearSignal);
+            writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, refreshedSnapshot, nextClearSignal, true);
           }
           publishClearResult(false);
           window.location.reload();
@@ -1786,9 +2051,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           cloudGeneration: confirmedGeneration,
         };
         latestSnapshot.current = completedSnapshot;
-        writeLocalSnapshot(storageKey, completedSnapshot, nextClearSignal);
+        writeLocalSnapshot(storageKey, completedSnapshot, nextClearSignal, true);
         if (storageKey !== LOCAL_SNAPSHOT_KEY) {
-          writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, completedSnapshot, nextClearSignal);
+          writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, completedSnapshot, nextClearSignal, true);
         }
       }
 
@@ -1875,7 +2140,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       </span>
 
       {!ready && (
-        <div className="hydration-status" role="status">
+        <div className="hydration-status">
           <span aria-hidden="true" /> 正在取回你的衣橱，完成前暂时不能编辑
         </div>
       )}
@@ -1928,6 +2193,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             avatarOutfit={avatarOutfit}
             onWear={wearItem}
             onSave={saveMetrics}
+            profileSaving={profileSaving}
           />
         )}
         {view === "daily" && (
@@ -2054,7 +2320,7 @@ function HomeView({
         <div className="mood-copy"><span className="breathing-orb" aria-hidden="true" /><div><p className="section-kicker">一小口呼吸</p><h2 id="mood-heading">现在的心情，有松一点吗？</h2></div></div>
         <div className="mood-control">
           <span>有点绷</span>
-          <input aria-label="当前放松程度" type="range" min="0" max="100" value={mood} onChange={(event) => setMood(Number(event.target.value))} style={{ "--mood-value": `${mood}%` } as React.CSSProperties} />
+          <input aria-label="当前放松程度" aria-valuetext={`放松程度 ${mood}%`} type="range" min="0" max="100" value={mood} onChange={(event) => setMood(Number(event.target.value))} style={{ "--mood-value": `${mood}%` } as React.CSSProperties} />
           <span>松下来了</span>
           <b>{mood}%</b>
         </div>
@@ -2135,7 +2401,7 @@ function ShopView({
       </section>
       <section className="shop-toolbar">
         <div className="search-box"><span aria-hidden="true">⌕</span><input aria-label="搜索虚拟商品" placeholder="搜一件让你开心的东西" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-        <div className="chip-row" aria-label="商品分类">
+        <div className="chip-row" role="group" aria-label="商品筛选">
           {SHOP_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={category === item} className={category === item ? "is-active" : ""} onClick={() => setCategory(item)}>{item}</button>)}
           <button type="button" aria-pressed={savedOnly} className={savedOnly ? "is-active" : ""} onClick={() => setSavedOnly((current) => !current)}>♡ 收藏 {saved.length}</button>
         </div>
@@ -2144,8 +2410,9 @@ function ShopView({
         {resultAnnouncement}
       </p>
       <section className="product-grid">
-        {visible.map((product) => (
-          <article className="product-card" key={product.id}>
+        {visible.map((product) => {
+          const wardrobeCandidate = createVirtualWardrobeItem(product);
+          return <article className="product-card" key={product.id}>
             <div className="product-image-wrap">
               <span className="virtual-pill">虚拟商品</span>
               <button type="button" className={`save-button ${saved.includes(product.id) ? "is-saved" : ""}`} onClick={() => onToggleSaved(product.id)} aria-label={saved.includes(product.id) ? `取消收藏${product.name}` : `收藏${product.name}`} aria-pressed={saved.includes(product.id)}>♡</button>
@@ -2155,8 +2422,8 @@ function ShopView({
               <p className="product-meta"><span>{product.category}</span><i style={{ background: product.color }} /> {product.colorName}</p>
               <h2>{product.name}</h2><p>{product.subtitle}</p>
               <div className="product-bottom"><strong><small>虚拟价</small> {product.points} 松松币</strong><span>不会扣款</span></div>
-              <div className={`product-actions ${createVirtualWardrobeItem(product) ? "" : "product-actions--single"}`}>
-                {createVirtualWardrobeItem(product) && (
+              <div className={`product-actions ${wardrobeCandidate ? "" : "product-actions--single"}`}>
+                {wardrobeCandidate && (
                   <button type="button" className="button button--soft" onClick={() => onTry(product)}>
                     {supportsAvatarTryOn(product.category) ? "试穿看看" : "收入衣橱"}
                   </button>
@@ -2164,8 +2431,8 @@ function ShopView({
                 <button type="button" className="button button--dark" onClick={() => onAdd(product)}>放进袋子</button>
               </div>
             </div>
-          </article>
-        ))}
+          </article>;
+        })}
       </section>
       {!visible.length && <div className="empty-state"><span>⌁</span><h2>{savedOnly ? "还没有收藏的虚拟商品" : "这里暂时是空的"}</h2><p>{savedOnly ? "遇到喜欢的就点一下爱心，之后还会在这里。" : "换个关键词，或者回到“全部”慢慢看看。"}</p></div>}
       <div className="no-pressure-note"><span aria-hidden="true">☁</span><div><strong>这里不制造“错过焦虑”</strong><p>没有限时、库存紧张和消费排名。你可以收藏、离开，任何时候再回来。</p></div></div>
@@ -2242,6 +2509,7 @@ function StudioView({
   avatarOutfit,
   onWear,
   onSave,
+  profileSaving,
 }: {
   wardrobe: WardrobeItem[];
   metrics: BodyMetrics;
@@ -2251,6 +2519,7 @@ function StudioView({
   avatarOutfit: AvatarOutfit;
   onWear: (item: WardrobeItem) => void;
   onSave: () => void;
+  profileSaving: boolean;
 }) {
   const [closetCategory, setClosetCategory] = useState<(typeof STUDIO_CATEGORIES)[number]>("全部");
   const previewableWardrobe = wardrobe.filter((item) => supportsAvatarTryOn(item.category));
@@ -2316,7 +2585,7 @@ function StudioView({
             <BodySlider label="腿长比例" value={metrics.legs} min={72} max={94} left="短" right="长" onChange={(legs) => setMetrics((current) => ({ ...current, legs }))} />
           </div>
           <div className="skin-row"><span id="skin-tone-label">肤色示意</span><div role="group" aria-labelledby="skin-tone-label">{SKIN_TONES.map(([tone, label]) => <button type="button" key={tone} aria-label={label} aria-pressed={metrics.skinTone === tone} className={metrics.skinTone === tone ? "is-active" : ""} style={{ background: tone }} onClick={() => setMetrics((current) => ({ ...current, skinTone: tone }))} />)}</div></div>
-          <button type="button" className="button button--primary button--full" onClick={onSave}>这就是现在的我</button>
+          <button type="button" className="button button--primary button--full" disabled={profileSaving} onClick={onSave}>{profileSaving ? "正在安心保存…" : "这就是现在的我"}</button>
           <div className="fit-readout"><div><span>当前上身松量</span><b>{fitLabel}</b></div><p>{ease === null ? "补充衣物胸围后，可以得到更可靠的参考。" : `根据已填数据，衣物与身体胸围相差约 ${ease} cm。`}</p><small>尺码建议不代表实际舒适度。</small></div>
         </aside>
       </section>
@@ -2507,6 +2776,7 @@ function AddGarmentDialog({
   const dialogRef = useDialogAccessibility<HTMLDivElement>(closeWhenReady, returnFocusRef);
   const submitErrorRef = useRef<HTMLDivElement>(null);
   const estimateTimer = useRef<number | null>(null);
+  const estimateGeneration = useRef(0);
   const [mode, setMode] = useState<"photo" | "link" | "manual">("photo");
   const [photo, setPhoto] = useState<File | undefined>();
   const [preview, setPreview] = useState<string>();
@@ -2538,6 +2808,7 @@ function AddGarmentDialog({
   );
   useEffect(
     () => () => {
+      estimateGeneration.current += 1;
       if (estimateTimer.current !== null)
         window.clearTimeout(estimateTimer.current);
     },
@@ -2568,6 +2839,8 @@ function AddGarmentDialog({
   }
 
   function invalidateRecognizedMeasurements() {
+    estimateGeneration.current += 1;
+    setImportError("");
     if (estimateTimer.current !== null) {
       window.clearTimeout(estimateTimer.current);
       estimateTimer.current = null;
@@ -2600,42 +2873,61 @@ function AddGarmentDialog({
   }
 
   function runEstimate() {
+    const requestGeneration = ++estimateGeneration.current;
+    const requestedMode = mode;
+    const requestedSizeChartText = sizeChartText;
+    const previouslyRecognized = new Set(matchedMeasurements);
     setAnalyzing(true);
     setImportError("");
     if (estimateTimer.current !== null)
       window.clearTimeout(estimateTimer.current);
     estimateTimer.current = window.setTimeout(() => {
-      if (mode === "link") {
-        const { measurements, matched } =
-          extractGarmentMeasurements(sizeChartText);
-        const previouslyRecognized = new Set(matchedMeasurements);
-        const applyRecognizedValue = (
-          field: "chest" | "waist" | "hips" | "length",
-          value: number | undefined,
-          setter: React.Dispatch<React.SetStateAction<string>>,
-        ) => {
-          if (value !== undefined) setter(String(value));
-          else if (previouslyRecognized.has(field)) setter("");
-        };
-        applyRecognizedValue("chest", measurements.chest, setChest);
-        applyRecognizedValue("waist", measurements.waist, setWaist);
-        applyRecognizedValue("hips", measurements.hips, setHips);
-        applyRecognizedValue("length", measurements.length, setLength);
-        setMatchedMeasurements(matched);
-        setAnalysisMessage(
-          matched.length
-            ? `已从你粘贴的尺码文字中识别 ${matched.length} 项；请对照原网页确认后再保存。`
-            : "没有找到带名称的尺寸。请粘贴“胸围 104 cm、衣长 67 cm”这类文字，或直接手动填写。",
-        );
-      } else {
-        setMatchedMeasurements([]);
-        setAnalysisMessage(
-          "照片已准备好。请根据照片中的 A4 纸或尺子手动填写尺寸；当前不会凭一张照片猜测厘米数。",
-        );
-      }
-      setAnalyzing(false);
-      setAnalyzed(true);
       estimateTimer.current = null;
+      void (async () => {
+        try {
+          if (requestedMode === "link") {
+            const { extractGarmentMeasurements } = await import(
+              "../lib/garment-analysis.mjs"
+            );
+            if (estimateGeneration.current !== requestGeneration) return;
+            const { measurements, matched } = extractGarmentMeasurements(
+              requestedSizeChartText,
+            );
+            const applyRecognizedValue = (
+              field: "chest" | "waist" | "hips" | "length",
+              value: number | undefined,
+              setter: React.Dispatch<React.SetStateAction<string>>,
+            ) => {
+              if (value !== undefined) setter(String(value));
+              else if (previouslyRecognized.has(field)) setter("");
+            };
+            applyRecognizedValue("chest", measurements.chest, setChest);
+            applyRecognizedValue("waist", measurements.waist, setWaist);
+            applyRecognizedValue("hips", measurements.hips, setHips);
+            applyRecognizedValue("length", measurements.length, setLength);
+            setMatchedMeasurements(matched);
+            setAnalysisMessage(
+              matched.length
+                ? `已从你粘贴的尺码文字中识别 ${matched.length} 项；请对照原网页确认后再保存。`
+                : "没有找到带名称的尺寸。请粘贴“胸围 104 cm、衣长 67 cm”这类文字，或直接手动填写。",
+            );
+          } else {
+            if (estimateGeneration.current !== requestGeneration) return;
+            setMatchedMeasurements([]);
+            setAnalysisMessage(
+              "照片已准备好。请根据照片中的 A4 纸或尺子手动填写尺寸；当前不会凭一张照片猜测厘米数。",
+            );
+          }
+          if (estimateGeneration.current !== requestGeneration) return;
+          setAnalyzing(false);
+          setAnalyzed(true);
+        } catch {
+          if (estimateGeneration.current !== requestGeneration) return;
+          setAnalyzing(false);
+          setAnalyzed(false);
+          setImportError("暂时无法读取尺码文字，请直接手动填写尺寸。");
+        }
+      })();
     }, 260);
   }
 
@@ -2644,6 +2936,13 @@ function AddGarmentDialog({
     value: string,
     setter: React.Dispatch<React.SetStateAction<string>>,
   ) {
+    estimateGeneration.current += 1;
+    if (estimateTimer.current !== null) {
+      window.clearTimeout(estimateTimer.current);
+      estimateTimer.current = null;
+    }
+    setAnalyzing(false);
+    setImportError("");
     setter(value);
     setMatchedMeasurements((current) =>
       current.filter((candidate) => candidate !== field),
@@ -2671,7 +2970,7 @@ function AddGarmentDialog({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || analyzing) return;
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError("");
@@ -2779,6 +3078,15 @@ function AddGarmentDialog({
             <span aria-hidden="true">⌨</span>手动录入
           </button>
         </div>
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {submitting
+            ? "正在保存衣物，请稍候"
+            : analyzing
+              ? mode === "link"
+                ? "正在读取尺码文字"
+                : "正在准备照片记录"
+              : ""}
+        </p>
         <form
           onSubmit={submit}
           aria-busy={submitting}
@@ -2874,9 +3182,15 @@ function AddGarmentDialog({
                   className="button button--soft button--full"
                   onClick={runEstimate}
                   disabled={!sourceUrl || !sizeChartText.trim() || analyzing}
+                  aria-describedby={importError ? "link-import-error" : undefined}
                 >
                   {analyzing ? "正在读取尺码文字…" : "识别尺码文字"}
                 </button>
+                {importError && (
+                  <p id="link-import-error" className="import-error" role="alert">
+                    {importError}
+                  </p>
+                )}
                 <p className="inline-note">
                   为保护隐私，当前不会自动抓取商家网页。链接会保存；你可以粘贴尺码表文字，让我们只提取明确标注的尺寸。
                 </p>
@@ -3086,9 +3400,13 @@ function AddGarmentDialog({
             <button
               type="submit"
               className="button button--primary"
-              disabled={submitting}
+              disabled={submitting || analyzing}
             >
-              {submitting ? "正在保存…" : "确认，放进衣橱"}
+              {submitting
+                ? "正在保存…"
+                : analyzing
+                  ? "请等待尺码读取完成"
+                  : "确认，放进衣橱"}
             </button>
           </div>
         </form>

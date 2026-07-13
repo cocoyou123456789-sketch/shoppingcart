@@ -8,6 +8,15 @@ export function replaceRuntimeAvatar(runtime, nextAvatar, disposeAvatar) {
   return previousAvatar;
 }
 
+export function isActiveAvatarRuntime(currentRuntime, candidateRuntime, tornDown = false) {
+  return Boolean(
+    !tornDown &&
+    candidateRuntime &&
+    currentRuntime === candidateRuntime &&
+    candidateRuntime.disposed !== true
+  );
+}
+
 export function disposeUniqueResources(resources, retained, disposeResource) {
   const retainedResources = retained instanceof Set ? retained : new Set(retained);
   let disposed = 0;

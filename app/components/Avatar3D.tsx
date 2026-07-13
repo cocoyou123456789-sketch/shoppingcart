@@ -31,6 +31,7 @@ import {
   cancelVisibleTimeBudget,
   createVisibleTimeBudget,
   disposeUniqueResources,
+  isActiveAvatarRuntime,
   pauseVisibleTimeBudget,
   replaceRuntimeAvatar,
   resumeVisibleTimeBudget,
@@ -630,13 +631,16 @@ export function Avatar3D({
     let rendererFailed = false;
     let rendering = false;
     const failRendering = () => {
-      if (rendererFailed) return;
+      if (rendererFailed || !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown)) return;
       rendererFailed = true;
       setRenderStatus("failed");
       teardown();
     };
     const renderFrame = (timestamp = performance.now()) => {
-      if (rendererFailed || tornDown) return false;
+      if (
+        rendererFailed ||
+        !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown)
+      ) return false;
       if (rendering) return true;
       rendering = true;
       try {
@@ -661,7 +665,13 @@ export function Avatar3D({
         zoomLevelRef.current = nextZoomLevel;
         setZoomLevel(nextZoomLevel);
       }
-      if (!rendering && !controls.autoRotate && !animationFrame && !animationTimer) renderFrame();
+      if (
+        isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown) &&
+        !rendering &&
+        !controls.autoRotate &&
+        !animationFrame &&
+        !animationTimer
+      ) renderFrame();
     };
     controls.addEventListener("change", handleControlsChange);
     cleanups.push(() => controls.removeEventListener("change", handleControlsChange));
@@ -669,6 +679,7 @@ export function Avatar3D({
     const scheduleAnimation = () => {
       if (
         rendererFailed ||
+        !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown) ||
         !controls.autoRotate ||
         !inViewport ||
         !pageVisible ||
@@ -685,7 +696,12 @@ export function Avatar3D({
     };
     const animate = (timestamp: number) => {
       animationFrame = 0;
-      if (!inViewport || !pageVisible || rendererFailed) return;
+      if (
+        !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown) ||
+        !inViewport ||
+        !pageVisible ||
+        rendererFailed
+      ) return;
       if (!renderFrame(timestamp)) return;
       scheduleAnimation();
     };
@@ -724,6 +740,7 @@ export function Avatar3D({
     };
     const scheduleAutoRotateStop = () => {
       if (
+        !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown) ||
         !controls.autoRotate ||
         autoRotateTimer ||
         autoRotateSuppressed ||
@@ -760,6 +777,7 @@ export function Avatar3D({
 
     const handleContextLost = (event: Event) => {
       event.preventDefault();
+      if (!isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown)) return;
       failRendering();
     };
     renderer.domElement.addEventListener("webglcontextlost", handleContextLost);
@@ -817,7 +835,12 @@ export function Avatar3D({
       cleanups.push(() => intersectionObserver.disconnect());
     }
     const handleResize = () => {
-      if (tornDown || rendererFailed || !mount.clientWidth || !mount.clientHeight) return;
+      if (
+        !isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown) ||
+        rendererFailed ||
+        !mount.clientWidth ||
+        !mount.clientHeight
+      ) return;
       try {
         const nextWidth = mount.clientWidth;
         const nextHeight = mount.clientHeight;
@@ -875,7 +898,12 @@ export function Avatar3D({
     if (renderFrame()) {
       renderer.shadowMap.autoUpdate = false;
       const successTimer = window.setTimeout(() => {
-        if (!tornDown && runtimeRef.current === runtime) setRenderStatus("ready");
+        if (!isActiveAvatarRuntime(runtimeRef.current, runtime, tornDown)) return;
+        if (renderer.getContext().isContextLost()) {
+          failRendering();
+          return;
+        }
+        setRenderStatus("ready");
       }, 0);
       cleanups.push(() => window.clearTimeout(successTimer));
       startAnimation();
@@ -907,7 +935,7 @@ export function Avatar3D({
     const runtime = runtimeRef.current;
     if (
       !runtime ||
-      runtime.disposed ||
+      !isActiveAvatarRuntime(runtimeRef.current, runtime) ||
       (runtime.metrics === sceneInput.metrics && runtime.outfit === sceneInput.outfit)
     ) return;
 

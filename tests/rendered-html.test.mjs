@@ -79,12 +79,33 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.doesNotMatch(app, /className="product-grid"[^>]*aria-live/);
   assert.match(app, /resultAnnouncement/);
   assert.match(app, /deleteAndRestoreFocus/);
-  assert.match(app, /id="garment-submit-error"[\s\S]*role="alert"/);
+  assert.match(app, /<div[^>]*id="garment-submit-error"[^>]*role="alert"[^>]*>/);
   assert.match(app, /aria-errormessage=\{importError/);
   assert.match(app, /浏览器阻止清除本机副本/);
   assert.match(app, /preservePersistedPhotos/);
   assert.match(app, /invalidateRecognizedMeasurements/);
+  assert.doesNotMatch(app, /import \{ extractGarmentMeasurements \} from/);
+  assert.match(app, /await import\(\s*"\.\.\/lib\/garment-analysis\.mjs"\s*\)/);
+  assert.match(app, /estimateGeneration\.current !== requestGeneration/);
+  assert.match(
+    app,
+    /function setManualMeasurement[\s\S]*?estimateGeneration\.current \+= 1;[\s\S]*?setAnalyzing\(false\)/,
+  );
+  assert.match(app, /<p[^>]*id="link-import-error"[^>]*className="import-error"[^>]*role="alert"[^>]*>/);
   assert.match(app, /dailyPreferences/);
+  assert.match(app, /profilePending/);
+  assert.match(app, /resolveHydratedProfile/);
+  assert.match(app, /保留了尚未确认同步的本机分身参数/);
+  assert.match(app, /profileEditGeneration\.current === job\.editGeneration/);
+  assert.match(app, /createSerialLatestQueue\(executeProfileSave\)/);
+  assert.match(app, /profileSaveQueue\.current\?\.running/);
+  assert.match(app, /await queueProfileSave\(\{/);
+  assert.match(app, /最新调整正在排队保存/);
+  assert.match(app, /disabled=\{profileSaving\}/);
+  assert.match(app, /if \(incompatibleSnapshot\.current\) return "incompatible"/);
+  assert.match(app, /deviceGenerationAction\([\s\S]*?incompatibleSnapshot\.current/);
+  assert.match(app, /generationAction === "reset-known"/);
+  assert.match(app, /当前版本不会覆盖它/);
   assert.match(app, /rankOutfitSelections/);
   assert.match(app, /avatarOutfitFromSelection\(outfit, wardrobe\)/);
   assert.match(app, /updateOutfit\(\(current\) => wearWardrobeItem\(current, item\)\)/);
@@ -148,8 +169,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   );
   assert.match(
     avatar,
-    /if \(renderFrame\(\)\) \{[\s\S]*?runtimeRef\.current === runtime\) setRenderStatus\("ready"\)/,
+    /if \(renderFrame\(\)\) \{[\s\S]*?isActiveAvatarRuntime\(runtimeRef\.current, runtime, tornDown\)[\s\S]*?setRenderStatus\("ready"\)/,
   );
+  assert.match(avatar, /renderer\.getContext\(\)\.isContextLost\(\)/);
   assert.match(
     avatar,
     /const initializationFrame = window\.requestAnimationFrame\([\s\S]*?window\.cancelAnimationFrame\(initializationFrame\)/,
@@ -180,6 +202,20 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true">\{removalStatus\}/);
   assert.match(app, /aria-describedby="cart-payment-note cart-checkout-note"/);
+  assert.match(app, /className="chip-row" role="group" aria-label="商品筛选"/);
+  assert.match(app, /aria-valuetext=\{`放松程度 \$\{mood\}%`\}/);
+  assert.match(app, /正在保存衣物，请稍候/);
+  assert.match(app, /if \(submitting \|\| analyzing\) return/);
+  assert.match(app, /disabled=\{submitting \|\| analyzing\}/);
+  const addDialogSource = app.slice(
+    app.indexOf("function AddGarmentDialog"),
+    app.indexOf("function CelebrationDialog"),
+  );
+  assert.ok(
+    addDialogSource.indexOf('role="status"') < addDialogSource.indexOf("<form"),
+    "garment progress announcements must stay outside the busy form",
+  );
+  assert.doesNotMatch(app, /className="hydration-status" role="status"/);
   assert.match(wardrobeRoute, /datetime\('now', '-10 minutes'\)/);
   assert.match(wardrobeRoute, /ALLOWED_IMAGE_TYPES/);
   assert.match(wardrobeRoute, /db\.batch/);
@@ -200,7 +236,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(personalDataRoute, /DELETE FROM body_profiles/);
   assert.match(personalDataRoute, /DELETE FROM wardrobe_items/);
   assert.match(styles, /\.save-button, \.icon-button, \.cart-list article > button \{ min-width: 44px; \}/);
-  assert.match(styles, /\.choice-group legend[\s\S]*font-size: 12px;/);
+  assert.match(styles, /\.choice-group legend \{[^}]*font-size: 11px;/);
   assert.match(styles, /\.upload-zone:focus-within/);
   assert.match(styles, /\.daily-date small \{[\s\S]*?font-size: 10px;/);
   assert.match(styles, /\.drawer-footer > small \{[\s\S]*?font-size: 11px;/);
@@ -264,6 +300,52 @@ test("critical secondary text colors meet WCAG AA contrast", async () => {
   assert.ok(contrastRatio(fitCopy, "#e7eae3") >= 4.5);
   assert.ok(contrastRatio(fitResult, "#e7eae3") >= 4.5);
   assert.ok(contrastRatio(recognitionBadge, "#eee3cf") >= 4.5);
+});
+
+test("critical product labels stay readable and touch ranges keep a usable hit area", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const ruleBody = (pattern) => styles.match(pattern)?.[1] ?? "";
+  const fontSize = (body) => Number(body.match(/font-size:\s*(\d+)px/)?.[1] ?? 0);
+  for (const [label, body] of [
+    ["source labels", ruleBody(/\.virtual-pill,\s*\.source-pill\s*\{([^}]*)\}/)],
+    ["product metadata", ruleBody(/\.product-meta\s*\{([^}]*)\}/)],
+    ["wardrobe metadata", ruleBody(/\.wardrobe-info > div:first-child\s*\{([^}]*)\}/)],
+    ["confidence label", ruleBody(/\.confidence-line span\s*\{([^}]*)\}/)],
+    ["confidence badge", ruleBody(/\.confidence\s*\{([^}]*)\}/)],
+    ["mobile navigation", ruleBody(/\.mobile-nav button\s*\{([^}]*)\}/)],
+  ]) {
+    assert.ok(fontSize(body) >= 10, `${label} fell below 10px`);
+  }
+
+  const mid = styles.match(
+    /\.confidence--mid \{ background: (#[0-9a-f]{6}); color: (#[0-9a-f]{6}); \}/i,
+  );
+  const low = styles.match(
+    /\.confidence--low \{ background: (#[0-9a-f]{6}); color: (#[0-9a-f]{6}); \}/i,
+  );
+  assert.ok(mid);
+  assert.ok(low);
+  assert.ok(contrastRatio(mid[2], mid[1]) >= 4.5);
+  assert.ok(contrastRatio(low[2], low[1]) >= 4.5);
+
+  const sourceRule = ruleBody(/\.virtual-pill,\s*\.source-pill\s*\{([^}]*)\}/);
+  const sourceBackground = sourceRule.match(/background:\s*(#[0-9a-f]{6})/i)?.[1];
+  const sourceColorToken = sourceRule.match(/color:\s*var\(--([^)]+)\)/)?.[1];
+  const sourceColor = sourceColorToken
+    ? styles.match(new RegExp(`--${sourceColorToken}:\\s*(#[0-9a-f]{6})`, "i"))?.[1]
+    : undefined;
+  assert.ok(sourceBackground);
+  assert.ok(sourceColor);
+  assert.ok(contrastRatio(sourceColor, sourceBackground) >= 4.5);
+
+  assert.match(
+    styles,
+    /\.mood-control input\[type="range"\] \{[^}]*height: 24px;/,
+  );
+  assert.match(
+    styles,
+    /\.mood-control input\[type="range"\],\s*\.body-slider input \{\s*min-height: 44px;/,
+  );
 });
 
 test("rejects anonymous reads and writes to private wardrobe APIs", async () => {
