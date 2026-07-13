@@ -1,6 +1,7 @@
 // @ts-check
 
-const DEVICE_SNAPSHOT_VERSION = 1;
+const DEVICE_SNAPSHOT_VERSION = 2;
+const KNOWN_DEVICE_SNAPSHOT_VERSIONS = new Set([1, DEVICE_SNAPSHOT_VERSION]);
 
 /**
  * Serializes every device-owned product field explicitly so additions cannot
@@ -28,6 +29,7 @@ export function serializeDeviceSnapshot(
     deletedWardrobeClientIds: snapshot.deletedWardrobeClientIds,
     dailyPreferences: snapshot.dailyPreferences,
     profilePending: snapshot.profilePending,
+    profileRevision: snapshot.profileRevision,
     clearSignal: clearSignal ?? undefined,
     updatedAt,
   });
@@ -36,7 +38,7 @@ export function serializeDeviceSnapshot(
 /**
  * Parses known device snapshots while refusing future versions that this
  * client could otherwise overwrite with an incomplete older schema.
- * Versionless records are accepted as the legacy v1 format.
+ * Versionless records and v1 are accepted as legacy formats.
  *
  * @param {string | null} raw
  * @returns {Record<string, unknown> | null}
@@ -46,7 +48,10 @@ export function parseDeviceSnapshot(raw) {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    if (parsed.version !== undefined && parsed.version !== DEVICE_SNAPSHOT_VERSION) return null;
+    if (
+      parsed.version !== undefined &&
+      !KNOWN_DEVICE_SNAPSHOT_VERSIONS.has(parsed.version)
+    ) return null;
     return parsed;
   } catch {
     return null;
@@ -63,11 +68,81 @@ export function hasUnsupportedDeviceSnapshotVersion(raw) {
       typeof parsed === "object" &&
       !Array.isArray(parsed) &&
       parsed.version !== undefined &&
-      parsed.version !== DEVICE_SNAPSHOT_VERSION,
+      !KNOWN_DEVICE_SNAPSHOT_VERSIONS.has(parsed.version),
     );
   } catch {
     return false;
   }
+}
+
+/** @param {unknown} left @param {unknown} right @returns {boolean} */
+function deviceValuesEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((entry, index) => deviceValuesEqual(entry, right[index]));
+  }
+  if (
+    !left ||
+    !right ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) return false;
+  const leftRecord = /** @type {Record<string, unknown>} */ (left);
+  const rightRecord = /** @type {Record<string, unknown>} */ (right);
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length && leftKeys.every(
+    (key) => Object.hasOwn(rightRecord, key) &&
+      deviceValuesEqual(leftRecord[key], rightRecord[key]),
+  );
+}
+
+/**
+ * Compares a current v2 snapshot with a proposed v2 serialization while
+ * ignoring only the write timestamp. Legacy snapshots intentionally return
+ * false so the next safe save migrates them to the protected schema.
+ *
+ * @param {string | null} currentRaw
+ * @param {string} nextRaw
+ */
+export function deviceSnapshotContentsMatch(currentRaw, nextRaw) {
+  try {
+    const current = JSON.parse(currentRaw ?? "null");
+    const next = JSON.parse(nextRaw);
+    if (
+      !current ||
+      !next ||
+      typeof current !== "object" ||
+      typeof next !== "object" ||
+      Array.isArray(current) ||
+      Array.isArray(next) ||
+      current.version !== DEVICE_SNAPSHOT_VERSION ||
+      next.version !== DEVICE_SNAPSHOT_VERSION
+    ) return false;
+    const currentKeys = Object.keys(current).filter((key) => key !== "updatedAt");
+    const nextKeys = Object.keys(next).filter((key) => key !== "updatedAt");
+    return currentKeys.length === nextKeys.length && currentKeys.every(
+      (key) => Object.hasOwn(next, key) && deviceValuesEqual(current[key], next[key]),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decides how to handle a storage event using the value that is still
+ * authoritative in localStorage when the event is processed.
+ *
+ * @param {{ eventRaw: string | null, currentRaw: string | null, hasLocalWork: boolean }} input
+ */
+export function crossTabSnapshotAction(input) {
+  if (!input.eventRaw || input.eventRaw !== input.currentRaw) return "ignore";
+  if (hasUnsupportedDeviceSnapshotVersion(input.eventRaw)) return "incompatible";
+  if (!parseDeviceSnapshot(input.eventRaw)) return "ignore";
+  return input.hasLocalWork ? "prompt" : "apply";
 }
 
 /**
@@ -221,6 +296,50 @@ export function resolveHydratedProfile(input) {
     metrics: localMetrics ?? input.defaults,
     profilePending: false,
     source: localMetrics ? "local" : "default",
+  };
+}
+
+/**
+ * Merges the profile coordination fields independently from the rest of a
+ * whole-device snapshot. Revisions are monotonic, and keeping local metrics
+ * against a newer confirmed cloud snapshot marks them pending instead of
+ * falsely calling them synchronized.
+ *
+ * @template {Record<string, unknown>} T
+ * @param {{
+ *   choice: "current" | "incoming",
+ *   current: { metrics: T, revision: number, pending: boolean },
+ *   incoming: { metrics: T, revision: number, pending: boolean }
+ * }} input
+ */
+export function resolveSnapshotProfileChoice(input) {
+  const sameMetrics = (() => {
+    const currentKeys = Object.keys(input.current.metrics);
+    const incomingKeys = Object.keys(input.incoming.metrics);
+    return currentKeys.length === incomingKeys.length && currentKeys.every(
+      (key) => Object.hasOwn(input.incoming.metrics, key) &&
+        Object.is(input.current.metrics[key], input.incoming.metrics[key]),
+    );
+  })();
+
+  if (input.choice === "incoming") {
+    return input.incoming.revision >= input.current.revision
+      ? { ...input.incoming, source: "incoming" }
+      : { ...input.current, source: "current" };
+  }
+  if (input.incoming.revision < input.current.revision) {
+    return { ...input.current, source: "current" };
+  }
+  const pending = input.incoming.revision > input.current.revision
+    ? input.incoming.pending || !sameMetrics
+    : input.incoming.pending
+      ? input.current.pending
+      : !sameMetrics;
+  return {
+    metrics: input.current.metrics,
+    revision: input.incoming.revision,
+    pending,
+    source: "current",
   };
 }
 

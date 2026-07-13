@@ -1,5 +1,7 @@
-const CLEAR_MARKER_VERSION = 1;
+const CLEAR_MARKER_VERSION = 2;
+const LEGACY_CLEAR_MARKER_VERSION = 1;
 const MAX_SIGNAL_LENGTH = 100;
+const MAX_GENERATION_LENGTH = 200;
 
 export function clearMarkerStorageKey(snapshotKey) {
   return `${snapshotKey}:clear-marker`;
@@ -42,11 +44,82 @@ export function compareClearSignals(left, right) {
   return String(left).localeCompare(String(right));
 }
 
+export function newestClearSignal(...signals) {
+  return signals.reduce((newest, signal) => {
+    if (typeof signal !== "string" || !signal) return newest;
+    if (!newest || compareClearSignals(signal, newest) > 0) return signal;
+    return newest;
+  }, null);
+}
+
+/**
+ * Keeps the persisted clear boundary monotonic while allowing an explicitly
+ * failed request to resume with the same idempotency signal.
+ */
+export function clearMarkerWriteAction(currentMarker, nextMarker) {
+  if (!nextMarker) return "reject";
+  if (!currentMarker) return "write";
+  const ordering = compareClearSignals(nextMarker.signal, currentMarker.signal);
+  if (ordering < 0) return "preserve-newer";
+  if (ordering > 0) return "write";
+  if (currentMarker.status === "complete") {
+    if (
+      nextMarker.status !== "complete" ||
+      currentMarker.completedGeneration !== nextMarker.completedGeneration
+    ) return "preserve-complete";
+  }
+  return "write";
+}
+
 export function serializeClearMarker(signal, clearedAt = new Date().toISOString()) {
   if (typeof signal !== "string" || !signal || signal.length > MAX_SIGNAL_LENGTH) {
     throw new TypeError("A short, non-empty clear signal is required");
   }
-  return JSON.stringify({ version: CLEAR_MARKER_VERSION, signal, clearedAt });
+  return JSON.stringify({
+    version: CLEAR_MARKER_VERSION,
+    signal,
+    clearedAt,
+    status: "pending",
+  });
+}
+
+export function serializeCompletedClearMarker(
+  signal,
+  completedGeneration,
+  clearedAt = new Date().toISOString(),
+) {
+  if (typeof signal !== "string" || !signal || signal.length > MAX_SIGNAL_LENGTH) {
+    throw new TypeError("A short, non-empty clear signal is required");
+  }
+  if (
+    typeof completedGeneration !== "string" ||
+    !completedGeneration ||
+    completedGeneration.length > MAX_GENERATION_LENGTH
+  ) {
+    throw new TypeError("A short, non-empty completed generation is required");
+  }
+  return JSON.stringify({
+    version: CLEAR_MARKER_VERSION,
+    signal,
+    clearedAt,
+    status: "complete",
+    completedGeneration,
+  });
+}
+
+export function serializeFailedClearMarker(
+  signal,
+  clearedAt = new Date().toISOString(),
+) {
+  if (typeof signal !== "string" || !signal || signal.length > MAX_SIGNAL_LENGTH) {
+    throw new TypeError("A short, non-empty clear signal is required");
+  }
+  return JSON.stringify({
+    version: CLEAR_MARKER_VERSION,
+    signal,
+    clearedAt,
+    status: "failed",
+  });
 }
 
 export function parseClearMarker(raw) {
@@ -54,17 +127,77 @@ export function parseClearMarker(raw) {
   try {
     const marker = JSON.parse(raw);
     if (
-      marker?.version !== CLEAR_MARKER_VERSION ||
+      (marker?.version !== CLEAR_MARKER_VERSION &&
+        marker?.version !== LEGACY_CLEAR_MARKER_VERSION) ||
       typeof marker.signal !== "string" ||
       !marker.signal ||
       marker.signal.length > MAX_SIGNAL_LENGTH ||
       typeof marker.clearedAt !== "string" ||
       !Number.isFinite(Date.parse(marker.clearedAt))
     ) return null;
-    return { signal: marker.signal, clearedAt: marker.clearedAt };
+    if (marker.version === LEGACY_CLEAR_MARKER_VERSION) {
+      return {
+        signal: marker.signal,
+        clearedAt: marker.clearedAt,
+        status: "complete",
+        completedGeneration: null,
+      };
+    }
+    if (marker.status === "pending") {
+      return {
+        signal: marker.signal,
+        clearedAt: marker.clearedAt,
+        status: "pending",
+        completedGeneration: null,
+      };
+    }
+    if (marker.status === "failed") {
+      return {
+        signal: marker.signal,
+        clearedAt: marker.clearedAt,
+        status: "failed",
+        completedGeneration: null,
+      };
+    }
+    if (
+      marker.status !== "complete" ||
+      typeof marker.completedGeneration !== "string" ||
+      !marker.completedGeneration ||
+      marker.completedGeneration.length > MAX_GENERATION_LENGTH
+    ) return null;
+    return {
+      signal: marker.signal,
+      clearedAt: marker.clearedAt,
+      status: "complete",
+      completedGeneration: marker.completedGeneration,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Decides how hydration should treat a persisted clear boundary without
+ * exposing or interpreting the snapshot's personal payload.
+ *
+ * @param {{status: string, signal: string, completedGeneration: string | null} | null} marker
+ * @param {{clearSignal?: string, cloudGeneration?: string} | null} snapshotEnvelope
+ * @param {boolean} incompatibleSnapshot
+ */
+export function clearMarkerHydrationAction(
+  marker,
+  snapshotEnvelope,
+  incompatibleSnapshot = false,
+) {
+  if (!marker) return "hydrate";
+  if (marker.status === "pending") return "recover-pending";
+  if (marker.status === "failed") return "hold-failed";
+  if (marker.status !== "complete" || !marker.completedGeneration) return "hydrate";
+  if (
+    snapshotEnvelope?.clearSignal === marker.signal &&
+    snapshotEnvelope?.cloudGeneration === marker.completedGeneration
+  ) return "hydrate";
+  return incompatibleSnapshot ? "preserve-future" : "reset-known";
 }
 
 export function snapshotMatchesClearSignal(snapshotSignal, activeSignal) {

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  crossTabSnapshotAction,
+  deviceSnapshotContentsMatch,
   deviceGenerationAction,
   guardKnownDeviceSnapshotWrite,
   hasUnsupportedDeviceSnapshotVersion,
@@ -8,6 +10,7 @@ import {
   preservePersistedPhotos,
   readDeviceSnapshotEnvelope,
   resolveHydratedProfile,
+  resolveSnapshotProfileChoice,
   restoreItemsInStoredOrder,
   serializeDeviceSnapshot,
 } from "../app/lib/device-storage.mjs";
@@ -64,6 +67,7 @@ test("device snapshots preserve every personal field through a JSON round trip",
       comfort: "保暖",
     },
     profilePending: true,
+    profileRevision: 4,
   };
   const raw = serializeDeviceSnapshot(
     snapshot,
@@ -72,21 +76,31 @@ test("device snapshots preserve every personal field through a JSON round trip",
   );
 
   assert.deepEqual(parseDeviceSnapshot(raw), {
-    version: 1,
+    version: 2,
     ...snapshot,
     clearSignal: "clear-signal",
     updatedAt: "2026-07-14T10:00:00.000Z",
   });
 });
 
-test("device snapshot parsing accepts legacy v1 data but rejects future schemas", () => {
+test("device snapshot parsing accepts legacy data and rejects future schemas", () => {
   assert.deepEqual(parseDeviceSnapshot('{"wardrobe":[],"metrics":{}}'), {
     wardrobe: [],
     metrics: {},
   });
-  assert.equal(parseDeviceSnapshot('{"version":2,"wardrobe":[],"metrics":{}}'), null);
+  assert.deepEqual(parseDeviceSnapshot('{"version":1,"wardrobe":[],"metrics":{}}'), {
+    version: 1,
+    wardrobe: [],
+    metrics: {},
+  });
+  assert.deepEqual(parseDeviceSnapshot('{"version":2,"wardrobe":[],"metrics":{}}'), {
+    version: 2,
+    wardrobe: [],
+    metrics: {},
+  });
+  assert.equal(parseDeviceSnapshot('{"version":3,"wardrobe":[],"metrics":{}}'), null);
   assert.equal(
-    hasUnsupportedDeviceSnapshotVersion('{"version":2,"wardrobe":[],"metrics":{}}'),
+    hasUnsupportedDeviceSnapshotVersion('{"version":3,"wardrobe":[],"metrics":{}}'),
     true,
   );
   assert.equal(hasUnsupportedDeviceSnapshotVersion('{"wardrobe":[],"metrics":{}}'), false);
@@ -95,9 +109,9 @@ test("device snapshot parsing accepts legacy v1 data but rejects future schemas"
 });
 
 test("future snapshot envelopes retain their cloud generation without exposing product data", () => {
-  const raw = '{"version":2,"cloudGeneration":"generation-9","clearSignal":"clear-8","futureField":{"private":true}}';
+  const raw = '{"version":3,"cloudGeneration":"generation-9","clearSignal":"clear-8","futureField":{"private":true}}';
   assert.deepEqual(readDeviceSnapshotEnvelope(raw), {
-    version: 2,
+    version: 3,
     cloudGeneration: "generation-9",
     clearSignal: "clear-8",
   });
@@ -116,22 +130,57 @@ test("future snapshot envelopes retain their cloud generation without exposing p
 });
 
 test("an older tab refuses a future snapshot that appeared after hydration", () => {
-  let raw = '{"version":1,"metrics":{"height":165}}';
+  let raw = '{"version":2,"metrics":{"height":165}}';
   let writes = 0;
-  raw = '{"version":2,"metrics":{"height":172},"futureField":true}';
+  raw = '{"version":3,"metrics":{"height":172},"futureField":true}';
 
   const result = guardKnownDeviceSnapshotWrite(
     () => raw,
     () => {
       writes += 1;
-      raw = '{"version":1,"metrics":{"height":160}}';
+      raw = '{"version":2,"metrics":{"height":160}}';
       return "complete";
     },
   );
 
   assert.equal(result, "incompatible");
   assert.equal(writes, 0);
-  assert.equal(raw, '{"version":2,"metrics":{"height":172},"futureField":true}');
+  assert.equal(raw, '{"version":3,"metrics":{"height":172},"futureField":true}');
+});
+
+test("snapshot equality skips timestamp-only writes but still migrates legacy data", () => {
+  const snapshot = {
+    wardrobe: [],
+    metrics: { height: 165 },
+    outfit: {},
+    mood: 62,
+    cartProductIds: [],
+    savedProductIds: [],
+    cloudItemIds: [],
+    cloudGeneration: "initial",
+    deletedWardrobeClientIds: [],
+    dailyPreferences: { weather: "温和" },
+    profilePending: false,
+  };
+  const first = serializeDeviceSnapshot(snapshot, null, "2026-07-14T10:00:00.000Z");
+  const later = serializeDeviceSnapshot(snapshot, null, "2026-07-14T10:00:01.000Z");
+  const changed = serializeDeviceSnapshot({ ...snapshot, mood: 63 }, null, "2026-07-14T10:00:01.000Z");
+  assert.equal(deviceSnapshotContentsMatch(first, later), true);
+  assert.equal(deviceSnapshotContentsMatch(first, changed), false);
+  assert.equal(
+    deviceSnapshotContentsMatch('{"version":1,"metrics":{"height":165}}', later),
+    false,
+  );
+});
+
+test("cross-tab events apply only the live authoritative snapshot", () => {
+  const known = serializeDeviceSnapshot({ wardrobe: [], metrics: {} }, null);
+  const newer = serializeDeviceSnapshot({ wardrobe: [], metrics: {}, mood: 63 }, null);
+  const future = '{"version":3,"wardrobe":[],"metrics":{}}';
+  assert.equal(crossTabSnapshotAction({ eventRaw: known, currentRaw: newer, hasLocalWork: false }), "ignore");
+  assert.equal(crossTabSnapshotAction({ eventRaw: future, currentRaw: future, hasLocalWork: false }), "incompatible");
+  assert.equal(crossTabSnapshotAction({ eventRaw: known, currentRaw: known, hasLocalWork: true }), "prompt");
+  assert.equal(crossTabSnapshotAction({ eventRaw: known, currentRaw: known, hasLocalWork: false }), "apply");
 });
 
 test("a snapshot write fails closed when the live schema cannot be read", () => {
@@ -195,6 +244,47 @@ test("pending device profile edits win over stale cloud metrics until saved", ()
   assert.deepEqual(
     resolveHydratedProfile({ defaults, local: defaults, cloud }),
     { metrics: cloud, profilePending: false, source: "cloud" },
+  );
+});
+
+test("whole-snapshot choices never roll profile revisions backward", () => {
+  const current = {
+    metrics: { height: 172, waist: 79 },
+    revision: 2,
+    pending: false,
+  };
+  const older = {
+    metrics: { height: 160, waist: 70 },
+    revision: 1,
+    pending: false,
+  };
+  assert.deepEqual(
+    resolveSnapshotProfileChoice({ choice: "incoming", current, incoming: older }),
+    { ...current, source: "current" },
+  );
+
+  const newer = {
+    metrics: { height: 168, waist: 75 },
+    revision: 3,
+    pending: false,
+  };
+  assert.deepEqual(
+    resolveSnapshotProfileChoice({ choice: "current", current, incoming: newer }),
+    { metrics: current.metrics, revision: 3, pending: true, source: "current" },
+  );
+  assert.deepEqual(
+    resolveSnapshotProfileChoice({ choice: "incoming", current, incoming: newer }),
+    { ...newer, source: "incoming" },
+  );
+
+  const matchingSynced = { ...current, pending: false };
+  assert.deepEqual(
+    resolveSnapshotProfileChoice({
+      choice: "current",
+      current: { ...current, pending: true },
+      incoming: matchingSynced,
+    }),
+    { metrics: current.metrics, revision: 2, pending: false, source: "current" },
   );
 });
 

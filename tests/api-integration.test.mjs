@@ -239,12 +239,22 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       skinTone: "#d7a883",
       bodyShape: "hourglass",
     };
-    const profileSave = await fetch(`${origin}/api/profile`, {
+    const missingProfileRevision = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json" },
       body: JSON.stringify(profile),
     });
+    assert.equal(missingProfileRevision.status, 400);
+    assert.deepEqual(await missingProfileRevision.json(), {
+      error: "expectedRevision must be a non-negative safe integer",
+    });
+    const profileSave = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: JSON.stringify({ ...profile, expectedRevision: 0 }),
+    });
     assert.equal(profileSave.status, 200, logs.value);
+    assert.equal((await profileSave.json()).revision, 1);
     const ownProfileResponse = await fetch(`${origin}/api/profile`, { headers: userA });
     const otherProfileResponse = await fetch(`${origin}/api/profile`, { headers: userB });
     assert.equal(ownProfileResponse.headers.get("cache-control"), "private, no-store");
@@ -252,7 +262,41 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const ownProfile = await ownProfileResponse.json();
     const otherProfile = await otherProfileResponse.json();
     assert.equal(ownProfile.profile.height, 166);
+    assert.equal(ownProfile.revision, 1);
     assert.equal(otherProfile.profile, null);
+    assert.equal(otherProfile.revision, 0);
+
+    const competingProfiles = await Promise.all(
+      [167, 168].map((height) => fetch(`${origin}/api/profile`, {
+        method: "PUT",
+        headers: { ...userA, "content-type": "application/json" },
+        body: JSON.stringify({ ...profile, height, expectedRevision: 1 }),
+      })),
+    );
+    assert.deepEqual(competingProfiles.map((response) => response.status).sort(), [200, 409]);
+    const competingProfileBodies = await Promise.all(
+      competingProfiles.map((response) => response.json()),
+    );
+    const winningProfileIndex = competingProfiles.findIndex((response) => response.status === 200);
+    const winningProfile = competingProfileBodies[winningProfileIndex];
+    const conflictedProfile = competingProfileBodies[
+      competingProfiles.findIndex((response) => response.status === 409)
+    ];
+    assert.equal(winningProfile.revision, 2);
+    assert.equal(conflictedProfile.error, "profile revision conflict");
+    assert.equal(conflictedProfile.revision, 2);
+    assert.equal(conflictedProfile.profile.height, [167, 168][winningProfileIndex]);
+    const latestProfile = await fetch(`${origin}/api/profile`, { headers: userA })
+      .then((response) => response.json());
+    assert.equal(latestProfile.revision, 2);
+    assert.equal(latestProfile.profile.height, conflictedProfile.profile.height);
+    const retriedProfile = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: JSON.stringify({ ...profile, expectedRevision: latestProfile.revision }),
+    });
+    assert.equal(retriedProfile.status, 200, logs.value);
+    assert.equal((await retriedProfile.json()).revision, 3);
 
     const form = garmentForm();
     form.set("id", "w-client-controlled");
@@ -421,7 +465,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const otherProfileSave = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userB, "content-type": "application/json" },
-      body: JSON.stringify({ ...profile, height: 174 }),
+      body: JSON.stringify({ ...profile, height: 174, expectedRevision: 0 }),
     });
     assert.equal(otherProfileSave.status, 200);
     const clearAForm = garmentForm();
@@ -448,7 +492,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const racingProfile = fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json" },
-      body: JSON.stringify({ ...profile, height: 168 }),
+      body: JSON.stringify({ ...profile, height: 168, expectedRevision: 3 }),
     });
     const clearPersonalData = fetch(`${origin}/api/personal-data`, {
       method: "DELETE",
@@ -472,10 +516,10 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       (await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json())).items.length,
       0,
     );
-    assert.equal(
-      (await fetch(`${origin}/api/profile`, { headers: userA }).then((response) => response.json())).profile,
-      null,
-    );
+    const clearedProfile = await fetch(`${origin}/api/profile`, { headers: userA })
+      .then((response) => response.json());
+    assert.equal(clearedProfile.profile, null);
+    assert.equal(clearedProfile.revision, 0);
     assert.equal(
       (await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(clearAItem.id)}`, { headers: userA })).status,
       404,
@@ -498,7 +542,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const staleProfile = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json" },
-      body: JSON.stringify(profile),
+      body: JSON.stringify({ ...profile, expectedRevision: 3 }),
     });
     assert.equal(staleProfile.status, 409);
     const clearedDraftReplayForm = garmentForm();
@@ -512,7 +556,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const freshProfile = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json", [generationHeader]: clearGeneration },
-      body: JSON.stringify({ ...profile, height: 169 }),
+      body: JSON.stringify({ ...profile, height: 169, expectedRevision: 0 }),
     });
     assert.equal(freshProfile.status, 200, logs.value);
     const freshGarmentForm = garmentForm();

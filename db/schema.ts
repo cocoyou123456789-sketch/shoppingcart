@@ -39,6 +39,7 @@ export const bodyProfiles = sqliteTable("body_profiles", {
   legs: integer("legs").notNull(),
   skinTone: text("skin_tone").notNull(),
   bodyShape: text("body_shape").notNull(),
+  revision: integer("revision").notNull().default(1),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

@@ -53,3 +53,28 @@ export function createSerialLatestQueue(worker) {
     },
   };
 }
+
+/**
+ * Runs every task in order and preserves each task's individual result. A
+ * rejected task does not prevent later tasks from starting.
+ */
+export function createSerialTaskQueue() {
+  /** @type {Promise<void>} */
+  let tail = Promise.resolve();
+
+  return {
+    /**
+     * @template T
+     * @param {() => Promise<T> | T} task
+     * @returns {Promise<T>}
+     */
+    enqueue(task) {
+      const result = tail.then(task, task);
+      tail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    },
+  };
+}

@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clearMutationAction,
+  clearMarkerHydrationAction,
   clearMarkerStorageKey,
+  clearMarkerWriteAction,
   compareClearSignals,
   clearSignalTimestamp,
   coordinationScope,
   createClearSignal,
   guardedSnapshotWrite,
+  newestClearSignal,
   parseClearMarker,
+  serializeCompletedClearMarker,
+  serializeFailedClearMarker,
   serializeClearMarker,
   snapshotMatchesClearSignal,
 } from "../app/lib/storage-coordination.mjs";
@@ -32,7 +37,51 @@ test("clear markers are owner-keyed, validated, and generation-safe", () => {
   assert.deepEqual(parseClearMarker(raw), {
     signal: "clear-123",
     clearedAt: "2026-07-14T08:00:00.000Z",
+    status: "pending",
+    completedGeneration: null,
   });
+  assert.deepEqual(
+    parseClearMarker(
+      serializeCompletedClearMarker(
+        "clear-123",
+        "cloud-next",
+        "2026-07-14T08:00:00.000Z",
+      ),
+    ),
+    {
+      signal: "clear-123",
+      clearedAt: "2026-07-14T08:00:00.000Z",
+      status: "complete",
+      completedGeneration: "cloud-next",
+    },
+  );
+  assert.deepEqual(
+    parseClearMarker(
+      serializeFailedClearMarker(
+        "clear-123",
+        "2026-07-14T08:00:00.000Z",
+      ),
+    ),
+    {
+      signal: "clear-123",
+      clearedAt: "2026-07-14T08:00:00.000Z",
+      status: "failed",
+      completedGeneration: null,
+    },
+  );
+  assert.deepEqual(
+    parseClearMarker(JSON.stringify({
+      version: 1,
+      signal: "legacy-clear",
+      clearedAt: "2026-07-14T08:00:00.000Z",
+    })),
+    {
+      signal: "legacy-clear",
+      clearedAt: "2026-07-14T08:00:00.000Z",
+      status: "complete",
+      completedGeneration: null,
+    },
+  );
   assert.equal(snapshotMatchesClearSignal("clear-123", "clear-123"), true);
   assert.equal(snapshotMatchesClearSignal(null, null), true);
   assert.equal(snapshotMatchesClearSignal(null, "clear-123"), false);
@@ -53,6 +102,63 @@ test("clear signals carry a sortable local generation without exposing personal 
   assert.ok(compareClearSignals(sameTimeB, sameTimeA) > 0);
   assert.ok(compareClearSignals(second, "legacy-clear") > 0);
   assert.equal(clearSignalTimestamp("initial"), null);
+  assert.equal(newestClearSignal(first, null, second, first), second);
+  assert.equal(newestClearSignal(null, undefined), null);
+});
+
+test("clear marker transitions cannot roll a newer or completed boundary backward", () => {
+  const olderPending = parseClearMarker(serializeClearMarker(
+    createClearSignal(1_720_944_000_000, "older"),
+    "2026-07-14T08:00:00.000Z",
+  ));
+  const newerPending = parseClearMarker(serializeClearMarker(
+    createClearSignal(1_720_944_000_001, "newer"),
+    "2026-07-14T08:00:01.000Z",
+  ));
+  const failed = parseClearMarker(serializeFailedClearMarker(
+    newerPending.signal,
+    newerPending.clearedAt,
+  ));
+  const complete = parseClearMarker(serializeCompletedClearMarker(
+    newerPending.signal,
+    "cloud-next",
+    newerPending.clearedAt,
+  ));
+
+  assert.equal(clearMarkerWriteAction(newerPending, olderPending), "preserve-newer");
+  assert.equal(clearMarkerWriteAction(olderPending, newerPending), "write");
+  assert.equal(clearMarkerWriteAction(failed, newerPending), "write");
+  assert.equal(clearMarkerWriteAction(complete, newerPending), "preserve-complete");
+  assert.equal(clearMarkerWriteAction(newerPending, complete), "write");
+  assert.equal(clearMarkerWriteAction(null, newerPending), "write");
+});
+
+test("clear marker hydration blocks pending data and preserves absorbed or future snapshots", () => {
+  const pending = parseClearMarker(serializeClearMarker(
+    "clear-123",
+    "2026-07-14T08:00:00.000Z",
+  ));
+  const complete = parseClearMarker(serializeCompletedClearMarker(
+    "clear-123",
+    "cloud-next",
+    "2026-07-14T08:00:00.000Z",
+  ));
+  const failed = parseClearMarker(serializeFailedClearMarker(
+    "clear-123",
+    "2026-07-14T08:00:00.000Z",
+  ));
+
+  assert.equal(clearMarkerHydrationAction(pending, null), "recover-pending");
+  assert.equal(clearMarkerHydrationAction(failed, null), "hold-failed");
+  assert.equal(
+    clearMarkerHydrationAction(complete, {
+      clearSignal: "clear-123",
+      cloudGeneration: "cloud-next",
+    }),
+    "hydrate",
+  );
+  assert.equal(clearMarkerHydrationAction(complete, null), "reset-known");
+  assert.equal(clearMarkerHydrationAction(complete, null, true), "preserve-future");
 });
 
 test("old debounce and pagehide callbacks cannot restore a cleared snapshot", () => {
@@ -76,7 +182,8 @@ test("old debounce and pagehide callbacks cannot restore a cleared snapshot", ()
 
 test("malformed clear markers cannot invalidate a snapshot", () => {
   assert.equal(parseClearMarker("not-json"), null);
-  assert.equal(parseClearMarker(JSON.stringify({ version: 2, signal: "x", clearedAt: "now" })), null);
+  assert.equal(parseClearMarker(JSON.stringify({ version: 2, signal: "x", clearedAt: "now", status: "pending" })), null);
+  assert.equal(parseClearMarker(JSON.stringify({ version: 2, signal: "x", clearedAt: "2026-07-14T08:00:00.000Z", status: "complete" })), null);
   assert.equal(parseClearMarker(JSON.stringify({ version: 1, signal: "", clearedAt: "2026-07-14T08:00:00.000Z" })), null);
   assert.throws(() => serializeClearMarker(""), /clear signal/i);
 });

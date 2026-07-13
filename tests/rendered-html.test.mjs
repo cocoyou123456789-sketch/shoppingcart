@@ -43,14 +43,18 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, avatar, avatarRuntime, deferredAvatar, wardrobeRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
+  const [page, layout, app, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, wardrobeRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AddGarmentDialog.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/DeferredAddGarmentDialog.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/use-dialog-accessibility.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/Avatar3D.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/avatar-runtime.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/components/DeferredAvatar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/profile/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/personal-data/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -64,10 +68,44 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(layout, /\/og\.jpg/);
   assert.match(layout, /\/favicon-48\.png/);
   assert.match(app, /VIRTUAL SHOPPING/);
-  assert.match(app, /不会凭一张照片猜测厘米数/);
-  assert.match(app, /只提取明确标注的尺寸/);
+  assert.match(app, /<DeferredAddGarmentDialog/);
+  assert.doesNotMatch(app, /function AddGarmentDialog|ADD TO WARDROBE/);
+  assert.match(addDialog, /不会凭一张照片猜测厘米数/);
+  assert.match(addDialog, /只提取明确标注的尺寸/);
   assert.match(app, /清除我的全部资料/);
   assert.match(app, /本机已保存/);
+  assert.match(app, /正在本机保存/);
+  assert.match(app, /className="external-update"/);
+  assert.match(app, /另一标签页有新修改/);
+  assert.match(app, /crossTabSnapshotAction/);
+  assert.match(app, /lastKnownSnapshotRaw/);
+  assert.match(app, /navigator\.locks\.request/);
+  assert.match(app, /CLEAR_BOUNDARY_LOCK_NAME/);
+  assert.match(app, /runClearBoundaryTask/);
+  assert.match(app, /scrubSnapshotAfterClear/);
+  assert.match(app, /currentEnvelope\.clearSignal === scrubSignal/);
+  assert.match(app, /clearMarkerWriteAction/);
+  assert.match(app, /newestClearSignal/);
+  assert.match(app, /clearMarkerHydrationAction/);
+  assert.match(app, /serializeCompletedClearMarker/);
+  assert.match(app, /serializeFailedClearMarker/);
+  const externalSnapshotSource = app.slice(
+    app.indexOf("const considerExternalSnapshot"),
+    app.indexOf("const handlePageShow"),
+  );
+  assert.ok(
+    externalSnapshotSource.indexOf("scrubSnapshotAfterClear") <
+      externalSnapshotSource.indexOf("crossTabSnapshotAction"),
+    "cross-clear stale snapshots must be scrubbed before ordinary conflict handling",
+  );
+  assert.match(app, /observedClearSignal\.current !== clearSignalAtWrite/);
+  assert.match(app, /persistedLocalChangeGeneration\.current = Math\.max/);
+  assert.match(app, /unlockedDeviceWritePending\.current/);
+  assert.match(app, /profileRevision/);
+  assert.match(app, /expectedRevision: profileRevision\.current/);
+  assert.match(app, /mutationEpoch\.current !== job\.requestEpoch/);
+  assert.match(app, /检测到另一标签页的新修改；自动保存已暂停/);
+  assert.match(app, /`保存状态：\$\{dataMode\}`/);
   assert.match(app, /Promise\.allSettled/);
   assert.match(app, /localSnapshotKey\(storageOwner\)/);
   assert.match(app, /isClearedLocalSnapshot/);
@@ -79,19 +117,43 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.doesNotMatch(app, /className="product-grid"[^>]*aria-live/);
   assert.match(app, /resultAnnouncement/);
   assert.match(app, /deleteAndRestoreFocus/);
-  assert.match(app, /<div[^>]*id="garment-submit-error"[^>]*role="alert"[^>]*>/);
-  assert.match(app, /aria-errormessage=\{importError/);
+  assert.match(app, /toggleSavedAndRestoreFocus/);
+  assert.match(app, /query\.trim\(\)\.toLocaleLowerCase\("zh-CN"\)/);
+  assert.match(app, /const inputValue = draft\.source === value/);
+  assert.doesNotMatch(app, /key=\{value\} type="number"/);
+  assert.match(addDialog, /<div[^>]*id="garment-submit-error"[^>]*role="alert"[^>]*>/);
+  assert.match(addDialog, /aria-errormessage=\{importError/);
   assert.match(app, /浏览器阻止清除本机副本/);
   assert.match(app, /preservePersistedPhotos/);
-  assert.match(app, /invalidateRecognizedMeasurements/);
-  assert.doesNotMatch(app, /import \{ extractGarmentMeasurements \} from/);
-  assert.match(app, /await import\(\s*"\.\.\/lib\/garment-analysis\.mjs"\s*\)/);
-  assert.match(app, /estimateGeneration\.current !== requestGeneration/);
+  assert.match(addDialog, /invalidateRecognizedMeasurements/);
+  assert.doesNotMatch(addDialog, /import \{ extractGarmentMeasurements \} from/);
+  assert.match(addDialog, /await import\(\s*"\.\.\/lib\/garment-analysis\.mjs"\s*\)/);
+  assert.match(addDialog, /estimateGeneration\.current !== requestGeneration/);
   assert.match(
-    app,
+    addDialog,
     /function setManualMeasurement[\s\S]*?estimateGeneration\.current \+= 1;[\s\S]*?setAnalyzing\(false\)/,
   );
-  assert.match(app, /<p[^>]*id="link-import-error"[^>]*className="import-error"[^>]*role="alert"[^>]*>/);
+  assert.match(addDialog, /<p[^>]*id="link-import-error"[^>]*className="import-error"[^>]*role="alert"[^>]*>/);
+  const changeModeSource = addDialog.slice(
+    addDialog.indexOf("function changeMode"),
+    addDialog.indexOf("function runEstimate"),
+  );
+  assert.doesNotMatch(
+    changeModeSource,
+    /setPhoto\(|setPreview\(|setSourceUrl\(|setSizeChartText\(|revokeObjectURL/,
+    "switching input tabs must preserve each mode's draft",
+  );
+  assert.match(deferredAddDialog, /lazy\(\(\) =>\s*import\("\.\/AddGarmentDialog"\)/);
+  assert.match(deferredAddDialog, /<Suspense/);
+  assert.match(deferredAddDialog, /正在打开录入窗口/);
+  assert.match(deferredAddDialog, /role="status"/);
+  assert.match(deferredAddDialog, /AddGarmentDialogLoadBoundary/);
+  assert.match(deferredAddDialog, /录入窗口暂时没有打开/);
+  assert.match(deferredAddDialog, /role="alert"/);
+  assert.match(deferredAddDialog, /setLazyAddGarmentDialog\(\(\) => nextLazyAddGarmentDialog\)/);
+  assert.match(deferredAddDialog, /setLoadAttempt\(\(current\) => current \+ 1\)/);
+  assert.match(deferredAddDialog, /onRetry=\{retryLoad\}/);
+  assert.match(dialogAccessibility, /returnTarget\.closest\("\[inert\]"\)/);
   assert.match(app, /dailyPreferences/);
   assert.match(app, /profilePending/);
   assert.match(app, /resolveHydratedProfile/);
@@ -197,19 +259,18 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(deferredAvatar, /AvatarErrorBoundary/);
   assert.match(deferredAvatar, /catch\(\(\) =>/);
   assert.match(deferredAvatar, /setForceLoad\(true\)/);
-  assert.match(app, /aria-label="上传或更换衣物正面照"/);
-  assert.match(app, /role="tabpanel"[\s\S]*?aria-busy=\{analyzing\}/);
-  assert.match(app, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
+  assert.match(addDialog, /aria-label="上传或更换衣物正面照"/);
+  assert.match(addDialog, /role="tabpanel"[\s\S]*?aria-busy=\{analyzing\}/);
+  assert.match(addDialog, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true">\{removalStatus\}/);
   assert.match(app, /aria-describedby="cart-payment-note cart-checkout-note"/);
   assert.match(app, /className="chip-row" role="group" aria-label="商品筛选"/);
   assert.match(app, /aria-valuetext=\{`放松程度 \$\{mood\}%`\}/);
-  assert.match(app, /正在保存衣物，请稍候/);
-  assert.match(app, /if \(submitting \|\| analyzing\) return/);
-  assert.match(app, /disabled=\{submitting \|\| analyzing\}/);
-  const addDialogSource = app.slice(
-    app.indexOf("function AddGarmentDialog"),
-    app.indexOf("function CelebrationDialog"),
+  assert.match(addDialog, /正在保存衣物，请稍候/);
+  assert.match(addDialog, /if \(submitting \|\| analyzing\) return/);
+  assert.match(addDialog, /disabled=\{submitting \|\| analyzing\}/);
+  const addDialogSource = addDialog.slice(
+    addDialog.indexOf("export function AddGarmentDialog"),
   );
   assert.ok(
     addDialogSource.indexOf('role="status"') < addDialogSource.indexOf("<form"),
@@ -228,6 +289,10 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(wardrobeRoute, /wardrobe_sync_keys/);
   assert.match(wardrobeRoute, /state = 'deleted'/);
   assert.match(wardrobeRoute, /wardrobeCloudId/);
+  assert.match(profileRoute, /expectedRevision/);
+  assert.match(profileRoute, /profile revision conflict/);
+  assert.match(profileRoute, /revision = body_profiles\.revision \+ 1/);
+  assert.match(profileRoute, /ALTER TABLE body_profiles ADD COLUMN revision/);
   assert.match(personalDataRoute, /db\.batch/);
   assert.match(personalDataRoute, /personal_data_clear_operations/);
   assert.match(personalDataRoute, /personal_data_clear_images/);
@@ -243,19 +308,24 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(styles, /\.measurement-grid > label > span \{[\s\S]*?font-size: 10px;/);
   assert.match(styles, /@media \(pointer: coarse\)/);
   assert.match(styles, /\.skip-link:focus/);
+  assert.match(styles, /^\*,\s*\n\*::before,\s*\n\*::after \{/);
+  assert.match(styles, /\.external-update \{/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);
   assert.match(packageJson, /"typecheck"/);
   assert.doesNotMatch(requestOwner, /private-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.doesNotMatch(packageJson, /tailwind/i);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await access(new URL("../drizzle/0000_complex_lady_deathstrike.sql", import.meta.url));
   await access(new URL("../drizzle/0002_rapid_cerise.sql", import.meta.url));
   await access(new URL("../drizzle/0003_smart_james_howlett.sql", import.meta.url));
+  await access(new URL("../drizzle/0004_ambiguous_nitro.sql", import.meta.url));
   await access(new URL("../app/api/wardrobe/route.ts", import.meta.url));
   await access(new URL("../app/api/profile/route.ts", import.meta.url));
+  await assert.rejects(access(new URL("../postcss.config.mjs", import.meta.url)));
 });
 
 function relativeLuminance(hex) {

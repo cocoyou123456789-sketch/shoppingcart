@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSerialLatestQueue } from "../app/lib/serial-latest-queue.mjs";
+import {
+  createSerialLatestQueue,
+  createSerialTaskQueue,
+} from "../app/lib/serial-latest-queue.mjs";
 
 function deferred() {
   let resolve;
@@ -59,4 +62,26 @@ test("a failed profile save stops queued requests without creating overlap", asy
   assert.deepEqual(started, ["old"]);
   assert.equal(queue.running, false);
   assert.equal(queue.pending, false);
+});
+
+test("device writes stay serial and later work survives an earlier failure", async () => {
+  const release = deferred();
+  const started = [];
+  const queue = createSerialTaskQueue();
+  const first = queue.enqueue(async () => {
+    started.push("A");
+    await release.promise;
+    throw new Error("first write failed");
+  });
+  const second = queue.enqueue(async () => {
+    started.push("B");
+    return "saved";
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(started, ["A"]);
+  release.resolve();
+  await assert.rejects(first, /first write failed/);
+  assert.equal(await second, "saved");
+  assert.deepEqual(started, ["A", "B"]);
 });

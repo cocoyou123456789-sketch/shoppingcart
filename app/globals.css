@@ -1,4 +1,96 @@
-@import "tailwindcss";
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+button,
+input,
+select,
+optgroup,
+textarea,
+::file-selector-button {
+  background: transparent;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  font-feature-settings: inherit;
+  font-variation-settings: inherit;
+  letter-spacing: inherit;
+  opacity: 1;
+}
+
+button,
+input:is([type="button"], [type="reset"], [type="submit"]),
+::file-selector-button {
+  appearance: button;
+}
+
+::placeholder {
+  color: currentColor;
+  opacity: 0.5;
+}
+
+@supports (color: color-mix(in oklab, red, red)) {
+  ::placeholder {
+    color: color-mix(in oklab, currentColor 50%, transparent);
+    opacity: 1;
+  }
+}
+
+:-moz-ui-invalid {
+  box-shadow: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block;
+  vertical-align: middle;
+}
+
+img,
+video {
+  height: auto;
+  max-width: 100%;
+}
+
+textarea {
+  resize: vertical;
+}
+
+[hidden] {
+  display: none !important;
+}
 
 :root {
   --ink: #302c2d;
@@ -17,10 +109,6 @@
   --radius-xl: 34px;
   --radius-lg: 24px;
   --radius-md: 17px;
-}
-
-* {
-  box-sizing: border-box;
 }
 
 html {
@@ -278,6 +366,42 @@ h3 {
 
 .sync-state--saved span {
   color: #759071;
+}
+
+.external-update {
+  align-items: center;
+  background: #fff7e8;
+  border: 1px solid rgba(135, 68, 56, 0.2);
+  border-radius: 18px;
+  box-shadow: 0 14px 36px rgba(80, 66, 57, 0.1);
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin: 16px auto 0;
+  max-width: min(1100px, calc(100% - 40px));
+  padding: 14px 16px 14px 20px;
+}
+
+.external-update strong {
+  display: block;
+  font-size: 14px;
+}
+
+.external-update p {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.external-update__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.external-update__actions .button {
+  min-height: 40px;
+  padding: 9px 14px;
 }
 
 .bag-button {
@@ -3198,6 +3322,8 @@ input[type="range"] {
 @media (max-width: 680px) {
   .brand small, .bag-button > span:not(:first-child), .top-actions .sync-state { display: none; }
   .brand strong { font-size: 17px; }
+  .external-update { align-items: stretch; flex-direction: column; gap: 12px; margin-top: 10px; max-width: calc(100% - 24px); padding: 14px; }
+  .external-update__actions { display: grid; grid-template-columns: 1fr 1fr; }
   .bag-button { padding: 9px; }
   .page { padding-inline: 14px; padding-top: 25px; }
   .hero-section { min-height: auto; }

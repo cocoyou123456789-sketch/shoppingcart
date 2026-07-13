@@ -1,0 +1,1 @@
+ALTER TABLE `body_profiles` ADD `revision` integer DEFAULT 1 NOT NULL;

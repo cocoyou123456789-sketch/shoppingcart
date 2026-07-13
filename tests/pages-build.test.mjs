@@ -11,6 +11,7 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   assert.match(html, /\/shoppingcart\/assets\/[^"']+\.css/);
   assert.match(html, /\/shoppingcart\/favicon-48\.png/);
   assert.doesNotMatch(html, /modulepreload[^>]+Avatar3D/i);
+  assert.doesNotMatch(html, /modulepreload[^>]+AddGarmentDialog/i);
   assert.doesNotMatch(html, /modulepreload[^>]+garment-analysis/i);
 
   const assetPaths = [...html.matchAll(/(?:src|href)="\/shoppingcart\/(assets\/[^"']+)"/g)]
@@ -19,8 +20,10 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   await Promise.all(assetPaths.map((path) => access(path)));
   const assets = await readdir(new URL("../pages-dist/assets/", import.meta.url));
   const avatarAsset = assets.find((name) => /^Avatar3D-.+\.js$/.test(name));
+  const addGarmentAsset = assets.find((name) => /^AddGarmentDialog-.+\.js$/.test(name));
   const garmentAnalysisAsset = assets.find((name) => /^garment-analysis-.+\.js$/.test(name));
   assert.ok(avatarAsset);
+  assert.ok(addGarmentAsset);
   assert.ok(garmentAnalysisAsset);
   const entryAsset = html.match(/src="\/shoppingcart\/assets\/([^"']+\.js)"/)?.[1];
   const cssAsset = html.match(/href="\/shoppingcart\/assets\/([^"']+\.css)"/)?.[1];
@@ -60,13 +63,17 @@ test("GitHub Pages build keeps its project base path and core product", async ()
         new URL(`../pages-dist/assets/${name}`, import.meta.url),
         "utf8",
       );
-      for (const match of source.matchAll(/(?:from|import)\s*(?:\(\s*)?["']\.\/([^"']+\.js)["']/g)) {
+      for (const match of source.matchAll(/(?:from|import)\s*(?:\(\s*)?["'`]\.\/([^"'`]+\.js)["'`]/g)) {
         if (!seen.has(match[1]) && !initialScripts.has(match[1])) pending.push(match[1]);
       }
     }
     return gzipTotal(seen);
   };
   assert.ok(await lazyPayloadBytes(avatarAsset) <= 145 * 1024, "3D payload exceeded 145 KiB gzip");
+  assert.ok(
+    await lazyPayloadBytes(addGarmentAsset) <= 8 * 1024,
+    "on-demand garment dialog exceeded 8 KiB gzip",
+  );
   assert.ok(
     await lazyPayloadBytes(garmentAnalysisAsset) <= 2 * 1024,
     "on-demand garment analysis exceeded 2 KiB gzip",
@@ -76,11 +83,32 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     new URL(`../pages-dist/assets/${entryAsset}`, import.meta.url),
     "utf8",
   );
+  const addGarmentSource = await readFile(
+    new URL(`../pages-dist/assets/${addGarmentAsset}`, import.meta.url),
+    "utf8",
+  );
+  const escapedAddGarmentAsset = addGarmentAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapedGarmentAsset = garmentAnalysisAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.match(
     entrySource,
+    new RegExp(escapedAddGarmentAsset),
+    "entry must reference the on-demand garment dialog chunk",
+  );
+  assert.doesNotMatch(
+    entrySource,
+    /ADD TO WARDROBE|上传衣物正面照|确认，放进衣橱|尺码表文字/,
+    "entry must not contain garment-dialog implementation copy",
+  );
+  assert.doesNotMatch(
+    entrySource,
     new RegExp(escapedGarmentAsset),
-    "entry must reference the on-demand garment analysis chunk",
+    "entry must not load garment analysis before the dialog requests it",
+  );
+  assert.match(addGarmentSource, /ADD TO WARDROBE/);
+  assert.match(
+    addGarmentSource,
+    new RegExp(escapedGarmentAsset),
+    "garment dialog must keep analysis as a nested on-demand chunk",
   );
 
   const favicon = new URL("../pages-dist/favicon-48.png", import.meta.url);
