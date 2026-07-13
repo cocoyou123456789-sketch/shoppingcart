@@ -30,8 +30,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build static site
-        run: npm run build:pages
+      - name: Check code quality
+        run: npm run lint
+
+      - name: Test server and private APIs
+        run: npm test && npm run test:api
+
+      - name: Build and smoke-test static site
+        run: npm run test:pages
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

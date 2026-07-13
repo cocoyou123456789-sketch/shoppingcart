@@ -55,6 +55,15 @@ function mesh(
   return result;
 }
 
+function useDebouncedValue<T>(value: T, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
 export function Avatar3D({
   metrics,
   outfit,
@@ -68,6 +77,9 @@ export function Avatar3D({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const [cameraView, setCameraView] = useState<CameraView>("angle");
+  const cameraViewRef = useRef<CameraView>("angle");
+  const sceneMetrics = useDebouncedValue(metrics, 90);
+  const sceneOutfit = useDebouncedValue(outfit, 90);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -75,14 +87,16 @@ export function Avatar3D({
 
     const width = Math.max(mount.clientWidth, 280);
     const height = Math.max(mount.clientHeight, compact ? 390 : 520);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const isSmallScreen = window.matchMedia("(max-width: 768px)").matches;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(31, width / height, 0.1, 100);
-    camera.position.set(...CAMERA_POSITIONS.angle);
+    camera.position.set(...CAMERA_POSITIONS[cameraViewRef.current]);
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isSmallScreen ? 1.5 : 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -97,7 +111,7 @@ export function Avatar3D({
     const keyLight = new THREE.DirectionalLight(0xffffff, 3.6);
     keyLight.position.set(4, 8, 6);
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(1024, 1024);
+    keyLight.shadow.mapSize.set(isSmallScreen ? 512 : 1024, isSmallScreen ? 512 : 1024);
     scene.add(keyLight);
     const rimLight = new THREE.DirectionalLight(0xdac9ff, 1.8);
     rimLight.position.set(-5, 4, -4);
@@ -105,19 +119,19 @@ export function Avatar3D({
 
     const avatar = new THREE.Group();
     avatar.position.y = -3.02;
-    avatar.scale.y = metrics.height / 168;
+    avatar.scale.y = sceneMetrics.height / 168;
     scene.add(avatar);
 
-    const bmi = metrics.weight / Math.pow(metrics.height / 100, 2);
+    const bmi = sceneMetrics.weight / Math.pow(sceneMetrics.height / 100, 2);
     const mass = THREE.MathUtils.clamp(0.88 + (bmi - 20) * 0.018, 0.76, 1.28);
-    const shoulderWidth = THREE.MathUtils.clamp(metrics.shoulder / 40, 0.78, 1.28);
-    const chestWidth = THREE.MathUtils.clamp(metrics.chest / 90, 0.8, 1.28);
-    const waistWidth = THREE.MathUtils.clamp(metrics.waist / 72, 0.76, 1.38);
-    const hipWidth = THREE.MathUtils.clamp(metrics.hips / 94, 0.78, 1.34);
-    const torsoScale = THREE.MathUtils.clamp(metrics.torso / 50, 0.84, 1.17);
-    const legScale = THREE.MathUtils.clamp(metrics.legs / 82, 0.86, 1.16);
+    const shoulderWidth = THREE.MathUtils.clamp(sceneMetrics.shoulder / 40, 0.78, 1.28);
+    const chestWidth = THREE.MathUtils.clamp(sceneMetrics.chest / 90, 0.8, 1.28);
+    const waistWidth = THREE.MathUtils.clamp(sceneMetrics.waist / 72, 0.76, 1.38);
+    const hipWidth = THREE.MathUtils.clamp(sceneMetrics.hips / 94, 0.78, 1.34);
+    const torsoScale = THREE.MathUtils.clamp(sceneMetrics.torso / 50, 0.84, 1.17);
+    const legScale = THREE.MathUtils.clamp(sceneMetrics.legs / 82, 0.86, 1.16);
 
-    const skin = material(metrics.skinTone, 0.82);
+    const skin = material(sceneMetrics.skinTone, 0.82);
     const hair = material("#332b2c", 0.9);
     const eye = material("#44383b", 0.6);
 
@@ -161,8 +175,8 @@ export function Avatar3D({
       mesh(new THREE.SphereGeometry(0.31, 24, 16), shoeMaterial, [0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
     );
 
-    if (outfit.dress) {
-      const dressMaterial = material(outfit.dress, 0.78);
+    if (sceneOutfit.dress) {
+      const dressMaterial = material(sceneOutfit.dress, 0.78);
       avatar.add(
         mesh(
           new THREE.CylinderGeometry(0.76 * chestWidth, 0.78 * waistWidth, 1.45, 40),
@@ -178,18 +192,18 @@ export function Avatar3D({
         ),
       );
     } else {
-      if (outfit.top) {
+      if (sceneOutfit.top) {
         avatar.add(
           mesh(
             new THREE.CylinderGeometry(0.77 * chestWidth, 0.78 * waistWidth, 1.64, 40),
-            material(outfit.top, 0.76),
+            material(sceneOutfit.top, 0.76),
             [0, 4.22, 0],
             [mass, torsoScale, 0.68 * mass],
           ),
         );
       }
-      if (outfit.bottom) {
-        const bottomMaterial = material(outfit.bottom, 0.8);
+      if (sceneOutfit.bottom) {
+        const bottomMaterial = material(sceneOutfit.bottom, 0.8);
         avatar.add(
           mesh(new THREE.CapsuleGeometry(0.28 * mass, 2.1, 8, 18), bottomMaterial, [-0.35 * hipWidth, 1.55, 0], [1.05, legScale, 1.08]),
           mesh(new THREE.CapsuleGeometry(0.28 * mass, 2.1, 8, 18), bottomMaterial, [0.35 * hipWidth, 1.55, 0], [1.05, legScale, 1.08]),
@@ -198,9 +212,9 @@ export function Avatar3D({
       }
     }
 
-    if (outfit.outerwear) {
+    if (sceneOutfit.outerwear) {
       const coatMaterial = new THREE.MeshStandardMaterial({
-        color: outfit.outerwear,
+        color: sceneOutfit.outerwear,
         roughness: 0.74,
         transparent: true,
         opacity: 0.93,
@@ -225,23 +239,64 @@ export function Avatar3D({
     scene.add(floor);
 
     const controls = new OrbitControls(camera, renderer.domElement);
+    renderer.domElement.style.touchAction = "pan-y";
     controls.enablePan = false;
-    controls.enableDamping = true;
+    controls.enableDamping = !reduceMotion;
     controls.dampingFactor = 0.06;
     controls.minDistance = 6.5;
     controls.maxDistance = 12;
     controls.target.set(0, 2.55, 0);
-    controls.autoRotate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    controls.autoRotate = !reduceMotion;
     controls.autoRotateSpeed = 0.45;
     controlsRef.current = controls;
 
     let animationFrame = 0;
-    const animate = () => {
+    let inViewport = true;
+    let pageVisible = !document.hidden;
+    const continuousAnimation = controls.autoRotate;
+    const renderFrame = () => {
       controls.update();
       renderer.render(scene, camera);
+    };
+    const handleControlsChange = () => renderer.render(scene, camera);
+    if (!continuousAnimation) controls.addEventListener("change", handleControlsChange);
+    const animate = () => {
+      animationFrame = 0;
+      if (!inViewport || !pageVisible) return;
+      renderFrame();
       animationFrame = window.requestAnimationFrame(animate);
     };
-    animate();
+    const startAnimation = () => {
+      if (!continuousAnimation) {
+        if (inViewport && pageVisible) renderFrame();
+        return;
+      }
+      if (!animationFrame && inViewport && pageVisible) {
+        animationFrame = window.requestAnimationFrame(animate);
+      }
+    };
+    const stopAnimation = () => {
+      if (!animationFrame) return;
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+    };
+    const handleVisibility = () => {
+      pageVisible = !document.hidden;
+      if (pageVisible) startAnimation();
+      else stopAnimation();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    const intersectionObserver = typeof IntersectionObserver === "undefined"
+      ? null
+      : new IntersectionObserver(([entry]) => {
+          inViewport = entry.isIntersecting;
+          if (inViewport) startAnimation();
+          else stopAnimation();
+        }, { rootMargin: "120px" });
+    intersectionObserver?.observe(mount);
+    renderFrame();
+    startAnimation();
 
     const resizeObserver = new ResizeObserver(() => {
       if (!mount.clientWidth || !mount.clientHeight) return;
@@ -250,12 +305,16 @@ export function Avatar3D({
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight);
+      if (!animationFrame) renderFrame();
     });
     resizeObserver.observe(mount);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      intersectionObserver?.disconnect();
       resizeObserver.disconnect();
+      controls.removeEventListener("change", handleControlsChange);
       controls.dispose();
       renderer.dispose();
       scene.traverse((object) => {
@@ -269,7 +328,7 @@ export function Avatar3D({
       cameraRef.current = null;
       controlsRef.current = null;
     };
-  }, [metrics, outfit, compact]);
+  }, [sceneMetrics, sceneOutfit, compact]);
 
   useEffect(() => {
     const camera = cameraRef.current;
@@ -297,7 +356,10 @@ export function Avatar3D({
             type="button"
             key={value}
             className={cameraView === value ? "is-active" : ""}
-            onClick={() => setCameraView(value)}
+            onClick={() => {
+              cameraViewRef.current = value;
+              setCameraView(value);
+            }}
             aria-pressed={cameraView === value}
           >
             {label}

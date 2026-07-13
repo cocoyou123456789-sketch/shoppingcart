@@ -11,6 +11,8 @@
 - 只使用现有衣橱生成三套每日搭配
 - D1 保存用户衣橱与分身参数，R2 保存衣物照片
 
+这些是产品的保留功能。后续优化可以改善交互、性能、推荐和视觉效果，但不应移除零花费虚拟购物、可调三维分身、衣橱录入、试穿、每日搭配与本机保存能力。
+
 照片和链接导入在当前版本中提供可确认的演示估算，不声称精准量体或真实布料模拟。
 
 ## 本地运行
@@ -27,8 +29,11 @@ npm run dev
 ```bash
 npm run lint
 npm test
-npm run build:pages
+npm run test:api
+npm run test:pages
 ```
+
+`npm test` 验证服务端构建与匿名访问保护；`npm run test:api` 验证用户资料、衣橱和照片隔离；`npm run test:pages` 验证 GitHub Pages 的路径与静态产物。发布前应全部通过。
 
 数据库结构位于 `db/schema.ts`，生成的迁移位于 `drizzle/`。部署配置位于 `.openai/hosting.json`。
 

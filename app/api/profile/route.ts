@@ -1,8 +1,5 @@
 import { getRawDb } from "../../../db";
-
-function ownerFor(request: Request) {
-  return request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase() || "private-preview";
-}
+import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
 
 async function ensureProfileTable(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS body_profiles (
@@ -23,11 +20,13 @@ async function ensureProfileTable(db: D1Database) {
 
 export async function GET(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
     const db = await getRawDb();
     await ensureProfileTable(db);
     const row = await db
       .prepare("SELECT * FROM body_profiles WHERE owner_email = ?")
-      .bind(ownerFor(request))
+      .bind(owner)
       .first<Record<string, unknown>>();
     if (!row) return Response.json({ profile: null });
     return Response.json({
@@ -51,6 +50,8 @@ export async function GET(request: Request) {
 
 export async function PUT(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
     const payload = (await request.json()) as Record<string, unknown>;
     const ranges: Record<string, [number, number]> = {
       height: [140, 210], weight: [30, 180], shoulder: [25, 70], chest: [55, 180],
@@ -71,7 +72,6 @@ export async function PUT(request: Request) {
 
     const db = await getRawDb();
     await ensureProfileTable(db);
-    const owner = ownerFor(request);
     await db.prepare(`INSERT INTO body_profiles (
       owner_email, height, weight, shoulder, chest, waist, hips, torso, legs, skin_tone, body_shape, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)

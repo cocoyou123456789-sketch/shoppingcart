@@ -6,8 +6,8 @@
   --paper: #f8f5ef;
   --paper-deep: #f0ebe2;
   --white: #fffdf9;
-  --coral: #d78069;
-  --coral-dark: #ad5f4f;
+  --coral: #ad5f4f;
+  --coral-dark: #874438;
   --coral-soft: #f3d8cf;
   --lavender: #ded6ec;
   --sage: #c8d2c2;
@@ -52,9 +52,12 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
-  outline: 3px solid rgba(215, 128, 105, 0.34);
-  outline-offset: 3px;
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  box-shadow: 0 0 0 6px #7b4036;
+  outline: 3px solid var(--white);
+  outline-offset: 2px;
 }
 
 button:disabled {
@@ -250,7 +253,7 @@ h3 {
 }
 
 .button--primary:hover:not(:disabled) {
-  background: #c96f59;
+  background: #934a3d;
   box-shadow: 0 16px 34px rgba(190, 103, 82, 0.28);
 }
 
@@ -509,8 +512,32 @@ h3 {
 
 .avatar-canvas canvas {
   height: 100% !important;
-  touch-action: none;
+  touch-action: pan-y !important;
   width: 100% !important;
+}
+
+.avatar-loading {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  inset: 0;
+  justify-content: center;
+  position: absolute;
+}
+
+.avatar-loading span {
+  animation: breathe 1.8s ease-in-out infinite;
+  background: rgba(173, 95, 79, 0.22);
+  border: 1px solid rgba(135, 68, 56, 0.24);
+  border-radius: 50%;
+  height: 48px;
+  width: 48px;
+}
+
+.avatar-loading p {
+  font-size: 12px;
 }
 
 .avatar-glow {
@@ -948,6 +975,19 @@ input[type="range"] {
   width: 100%;
 }
 
+.search-box:focus-within,
+.upload-zone:focus-within {
+  box-shadow: 0 0 0 6px #7b4036;
+  outline: 3px solid var(--white);
+  outline-offset: 2px;
+}
+
+.search-box input:focus-visible,
+.upload-zone input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
 .chip-row {
   display: flex;
   flex-wrap: wrap;
@@ -1105,6 +1145,32 @@ input[type="range"] {
   display: grid;
   gap: 8px;
   grid-template-columns: 0.75fr 1.25fr;
+}
+
+.product-actions--single {
+  grid-template-columns: 1fr;
+}
+
+.wardrobe-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr auto;
+}
+
+.remove-garment {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 54px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.remove-garment:hover {
+  border-color: rgba(139, 75, 64, 0.45);
+  color: #7b4036;
 }
 
 .product-actions .button {
@@ -1888,8 +1954,8 @@ input[type="range"] {
   border: 2px solid var(--white);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--line);
-  height: 21px;
-  width: 21px;
+  height: 36px;
+  width: 36px;
 }
 
 .skin-row button.is-active {

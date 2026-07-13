@@ -1,11 +1,8 @@
 import { getRawDb, getWardrobeImages } from "../../../db";
+import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
 
 const ALLOWED_CATEGORIES = new Set(["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"]);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
-
-function ownerFor(request: Request) {
-  return request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase() || "private-preview";
-}
 
 function numberOrNull(value: FormDataEntryValue | null) {
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -37,7 +34,36 @@ async function ensureWardrobeTables(db: D1Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS wardrobe_owner_id_idx ON wardrobe_items (owner_email, id)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_image_cleanup (
+      image_key TEXT PRIMARY KEY NOT NULL,
+      owner_email TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS wardrobe_cleanup_owner_idx ON wardrobe_image_cleanup (owner_email)"),
   ]);
+}
+
+async function cleanupPendingImages(db: D1Database, owner: string) {
+  try {
+    await db.prepare(`DELETE FROM wardrobe_image_cleanup
+      WHERE image_key IN (SELECT image_key FROM wardrobe_items WHERE image_key IS NOT NULL)`).run();
+    const pending = await db
+      .prepare("SELECT image_key FROM wardrobe_image_cleanup WHERE owner_email = ? ORDER BY created_at LIMIT 4")
+      .bind(owner)
+      .all<{ image_key: string }>();
+    if (!pending.results.length) return;
+    const images = await getWardrobeImages();
+    for (const row of pending.results) {
+      try {
+        await images.delete(row.image_key);
+        await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(row.image_key).run();
+      } catch {
+        // Keep the outbox row so a later request can safely retry cleanup.
+      }
+    }
+  } catch {
+    // Cleanup should never block the user's wardrobe request.
+  }
 }
 
 function rowToItem(row: Record<string, unknown>) {
@@ -63,9 +89,11 @@ function rowToItem(row: Record<string, unknown>) {
 
 export async function GET(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
     const db = await getRawDb();
     await ensureWardrobeTables(db);
-    const owner = ownerFor(request);
+    await cleanupPendingImages(db, owner);
     const result = await db
       .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? ORDER BY created_at DESC LIMIT 200")
       .bind(owner)
@@ -78,6 +106,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
     const form = await request.formData();
     const name = String(form.get("name") ?? "").trim();
     const category = String(form.get("category") ?? "");
@@ -88,9 +118,8 @@ export async function POST(request: Request) {
 
     const db = await getRawDb();
     await ensureWardrobeTables(db);
-    const owner = ownerFor(request);
-    const suppliedId = String(form.get("id") ?? "").trim();
-    const id = /^w-[a-zA-Z0-9-]{3,80}$/.test(suppliedId) ? suppliedId : `w-${crypto.randomUUID()}`;
+    await cleanupPendingImages(db, owner);
+    const id = `w-${crypto.randomUUID()}`;
     const photo = form.get("photo");
     let imageKey: string | null = null;
     let imageType: string | null = null;
@@ -101,6 +130,9 @@ export async function POST(request: Request) {
       }
       imageType = photo.type;
       imageKey = `wardrobe/${encodeURIComponent(owner)}/${crypto.randomUUID()}`;
+      await db.prepare("INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email) VALUES (?, ?)")
+        .bind(imageKey, owner)
+        .run();
       await (await getWardrobeImages()).put(imageKey, photo.stream(), {
         httpMetadata: { contentType: photo.type },
         customMetadata: { owner, itemId: id },
@@ -128,18 +160,37 @@ export async function POST(request: Request) {
       confidence: String(form.get("confidence") ?? "待确认").slice(0, 12),
     };
 
-    await db
-      .prepare(`INSERT INTO wardrobe_items (
-        id, owner_email, name, category, color, color_name, size, source, source_url,
-        image_key, image_type, season, style, chest, waist, hips, length, confidence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(
-        values.id, values.owner, values.name, values.category, values.color, values.colorName,
-        values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
-        values.season, values.style, values.chest, values.waist, values.hips, values.length,
-        values.confidence,
-      )
-      .run();
+    try {
+      await db
+        .prepare(`INSERT INTO wardrobe_items (
+          id, owner_email, name, category, color, color_name, size, source, source_url,
+          image_key, image_type, season, style, chest, waist, hips, length, confidence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(
+          values.id, values.owner, values.name, values.category, values.color, values.colorName,
+          values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
+          values.season, values.style, values.chest, values.waist, values.hips, values.length,
+          values.confidence,
+        )
+        .run();
+    } catch (error) {
+      if (imageKey) {
+        try {
+          await (await getWardrobeImages()).delete(imageKey);
+          await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
+        } catch {
+          // The durable cleanup row remains so a later request can retry safely.
+        }
+      }
+      throw error;
+    }
+    if (imageKey) {
+      try {
+        await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
+      } catch {
+        // A later cleanup pass removes rows that now reference a saved garment.
+      }
+    }
 
     return Response.json({
       item: {
@@ -168,17 +219,19 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
     const id = new URL(request.url).searchParams.get("id")?.trim();
     if (!id) return Response.json({ error: "id is required" }, { status: 400 });
-    const owner = ownerFor(request);
     const db = await getRawDb();
     await ensureWardrobeTables(db);
+    await cleanupPendingImages(db, owner);
     const found = await db
       .prepare("SELECT image_key FROM wardrobe_items WHERE owner_email = ? AND id = ?")
       .bind(owner, id)
       .first<{ image_key: string | null }>();
-    await db.prepare("DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ?").bind(owner, id).run();
     if (found?.image_key) await (await getWardrobeImages()).delete(found.image_key);
+    await db.prepare("DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ?").bind(owner, id).run();
     return new Response(null, { status: 204 });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to delete garment" }, { status: 500 });

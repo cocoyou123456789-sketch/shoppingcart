@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const wardrobeItems = sqliteTable(
   "wardrobe_items",
@@ -41,3 +41,13 @@ export const bodyProfiles = sqliteTable("body_profiles", {
   bodyShape: text("body_shape").notNull(),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const wardrobeImageCleanup = sqliteTable(
+  "wardrobe_image_cleanup",
+  {
+    imageKey: text("image_key").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("wardrobe_cleanup_owner_idx").on(table.ownerEmail)],
+);

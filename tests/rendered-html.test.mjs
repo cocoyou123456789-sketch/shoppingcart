@@ -15,6 +15,13 @@ async function render(path = "/") {
   );
 }
 
+async function loadWorker() {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${Math.random()}`);
+  const { default: worker } = await import(workerUrl.href);
+  return worker;
+}
+
 test("server-renders the finished 松松逛 product", async () => {
   const response = await render();
   assert.equal(response.status, 200);
@@ -34,30 +41,49 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, avatar, hosting, packageJson] = await Promise.all([
+  const [page, layout, app, avatar, hosting, packageJson, requestOwner] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/Avatar3D.tsx", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/request-owner.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /<MuseApp \/>/);
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
   assert.match(layout, /\/og\.jpg/);
   assert.match(app, /VIRTUAL SHOPPING/);
-  assert.match(app, /照片估算只用于视觉预览/);
+  assert.match(app, /没有经过自动测量/);
   assert.match(app, /不代表衣服的实际尺寸/);
+  assert.match(app, /本机已保存/);
+  assert.match(app, /Promise\.allSettled/);
   assert.match(avatar, /WebGLRenderer/);
   assert.match(avatar, /OrbitControls/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);
+  assert.doesNotMatch(requestOwner, /private-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await access(new URL("../drizzle/0000_complex_lady_deathstrike.sql", import.meta.url));
   await access(new URL("../app/api/wardrobe/route.ts", import.meta.url));
   await access(new URL("../app/api/profile/route.ts", import.meta.url));
+});
+
+test("rejects anonymous access to private wardrobe APIs", async () => {
+  const worker = await loadWorker();
+  const env = {
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  };
+  for (const path of ["/api/wardrobe", "/api/profile", "/api/wardrobe/image?id=w-test"]) {
+    const response = await worker.fetch(
+      new Request(`https://public.example${path}`),
+      env,
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+    assert.equal(response.status, 401, path);
+  }
 });

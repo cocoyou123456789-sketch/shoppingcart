@@ -1,16 +1,15 @@
 import { getRawDb, getWardrobeImages } from "../../../../db";
-
-function ownerFor(request: Request) {
-  return request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase() || "private-preview";
-}
+import { ownerForRequest } from "../../../lib/request-owner";
 
 export async function GET(request: Request) {
   try {
+    const owner = ownerForRequest(request);
+    if (!owner) return new Response("Authentication required", { status: 401 });
     const id = new URL(request.url).searchParams.get("id")?.trim();
     if (!id) return new Response("Missing image id", { status: 400 });
     const row = await (await getRawDb())
       .prepare("SELECT image_key, image_type FROM wardrobe_items WHERE owner_email = ? AND id = ?")
-      .bind(ownerFor(request), id)
+      .bind(owner, id)
       .first<{ image_key: string | null; image_type: string | null }>();
     if (!row?.image_key) return new Response("Image not found", { status: 404 });
     const object = await (await getWardrobeImages()).get(row.image_key);
