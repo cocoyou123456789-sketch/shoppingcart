@@ -5,6 +5,8 @@ import test from "node:test";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const origin = "http://localhost:4179";
+const generationHeader = "x-songsong-data-generation";
+const clearRequestHeader = "x-songsong-clear-request";
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const validPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -261,6 +263,137 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.match(item.id, /^w-[0-9a-f-]{36}$/);
     assert.notEqual(item.id, "w-client-controlled");
 
+    const clientDraftId = `w-${crypto.randomUUID()}`;
+    const idempotentForm = garmentForm();
+    idempotentForm.set("id", clientDraftId);
+    idempotentForm.set("name", "可安全重试的上衣");
+    const firstIdempotentCreate = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: idempotentForm,
+    });
+    assert.equal(firstIdempotentCreate.status, 201, logs.value);
+    const firstIdempotentItem = (await firstIdempotentCreate.json()).item;
+    assert.notEqual(firstIdempotentItem.id, clientDraftId);
+    const replayForm = garmentForm();
+    replayForm.set("id", clientDraftId);
+    replayForm.set("name", "响应丢失后的重试");
+    const replayCreate = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: replayForm,
+    });
+    assert.equal(replayCreate.status, 200, logs.value);
+    assert.equal(replayCreate.headers.get("cache-control"), "private, no-store");
+    assert.equal((await replayCreate.json()).item.id, firstIdempotentItem.id);
+    const concurrentDraftId = `w-${crypto.randomUUID()}`;
+    const concurrentCreates = await Promise.all(
+      ["并发重试 A", "并发重试 B"].map((name) => {
+        const concurrentForm = garmentForm();
+        concurrentForm.set("id", concurrentDraftId);
+        concurrentForm.set("name", name);
+        return fetch(`${origin}/api/wardrobe`, {
+          method: "POST",
+          headers: userA,
+          body: concurrentForm,
+        });
+      }),
+    );
+    assert.deepEqual(concurrentCreates.map((response) => response.status).sort(), [200, 201]);
+    const concurrentItems = await Promise.all(concurrentCreates.map((response) => response.json()));
+    assert.equal(concurrentItems[0].item.id, concurrentItems[1].item.id);
+    const otherOwnerSameDraft = garmentForm();
+    otherOwnerSameDraft.set("id", clientDraftId);
+    const otherOwnerCreate = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userB,
+      body: otherOwnerSameDraft,
+    });
+    assert.equal(otherOwnerCreate.status, 201, logs.value);
+    assert.notEqual((await otherOwnerCreate.json()).item.id, firstIdempotentItem.id);
+
+    const deleteBeforeUploadId = `w-${crypto.randomUUID()}`;
+    const deleteBeforeUpload = await fetch(
+      `${origin}/api/wardrobe?clientId=${encodeURIComponent(deleteBeforeUploadId)}`,
+      { method: "DELETE", headers: userA },
+    );
+    assert.equal(deleteBeforeUpload.status, 204, logs.value);
+    const deletedDraftForm = garmentForm();
+    deletedDraftForm.set("id", deleteBeforeUploadId);
+    const deletedDraftUpload = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: deletedDraftForm,
+    });
+    assert.equal(deletedDraftUpload.status, 410, logs.value);
+
+    const deleteSyncedDraft = await fetch(
+      `${origin}/api/wardrobe?clientId=${encodeURIComponent(clientDraftId)}`,
+      { method: "DELETE", headers: userA },
+    );
+    assert.equal(deleteSyncedDraft.status, 204, logs.value);
+    const replayDeletedForm = garmentForm();
+    replayDeletedForm.set("id", clientDraftId);
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe`, {
+        method: "POST",
+        headers: userA,
+        body: replayDeletedForm,
+      })).status,
+      410,
+    );
+
+    const deleteByCloudIdClientId = `w-${crypto.randomUUID()}`;
+    const deleteByCloudIdForm = garmentForm();
+    deleteByCloudIdForm.set("id", deleteByCloudIdClientId);
+    const deleteByCloudIdCreate = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: deleteByCloudIdForm,
+    });
+    assert.equal(deleteByCloudIdCreate.status, 201, logs.value);
+    const deleteByCloudIdItem = (await deleteByCloudIdCreate.json()).item;
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe?id=${encodeURIComponent(deleteByCloudIdItem.id)}`, {
+        method: "DELETE",
+        headers: userA,
+      })).status,
+      204,
+    );
+    const replayCloudIdDeletedForm = garmentForm();
+    replayCloudIdDeletedForm.set("id", deleteByCloudIdClientId);
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe`, {
+        method: "POST",
+        headers: userA,
+        body: replayCloudIdDeletedForm,
+      })).status,
+      410,
+    );
+
+    const racingDeleteClientId = `w-${crypto.randomUUID()}`;
+    const racingDeleteForm = garmentForm();
+    racingDeleteForm.set("id", racingDeleteClientId);
+    const [racingUpload, racingDelete] = await Promise.all([
+      fetch(`${origin}/api/wardrobe`, { method: "POST", headers: userA, body: racingDeleteForm }),
+      fetch(`${origin}/api/wardrobe?clientId=${encodeURIComponent(racingDeleteClientId)}`, {
+        method: "DELETE",
+        headers: userA,
+      }),
+    ]);
+    assert.ok([201, 410].includes(racingUpload.status), logs.value);
+    assert.equal(racingDelete.status, 204, logs.value);
+    const racingReplayForm = garmentForm();
+    racingReplayForm.set("id", racingDeleteClientId);
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe`, {
+        method: "POST",
+        headers: userA,
+        body: racingReplayForm,
+      })).status,
+      410,
+    );
+
     const ownItemsResponse = await fetch(`${origin}/api/wardrobe`, { headers: userA });
     const otherItemsResponse = await fetch(`${origin}/api/wardrobe`, { headers: userB });
     assert.equal(ownItemsResponse.headers.get("cache-control"), "private, no-store");
@@ -269,6 +402,8 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const otherItems = await otherItemsResponse.json();
     assert.equal(ownItems.limit, 200);
     assert.ok(ownItems.items.some((entry) => entry.id === item.id));
+    assert.ok(ownItems.items.some((entry) => entry.clientId === concurrentDraftId));
+    assert.ok(!ownItems.items.some((entry) => entry.clientId === racingDeleteClientId));
     assert.ok(!otherItems.items.some((entry) => entry.id === item.id));
 
     const ownImage = await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`, { headers: userA });
@@ -304,16 +439,35 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const clearAItem = (await clearACreate.json()).item;
     const clearBItem = (await clearBCreate.json()).item;
 
-    const clearWardrobe = await fetch(`${origin}/api/wardrobe?scope=all`, {
-      method: "DELETE",
-      headers: userA,
+    const clearRequestId = `clear-${crypto.randomUUID()}`;
+    const racingGarments = Array.from({ length: 4 }, (_, index) => {
+      const racingForm = garmentForm();
+      racingForm.set("name", `与清除竞争的衣物 ${index + 1}`);
+      return fetch(`${origin}/api/wardrobe`, { method: "POST", headers: userA, body: racingForm });
     });
-    const clearProfile = await fetch(`${origin}/api/profile`, {
-      method: "DELETE",
-      headers: userA,
+    const racingProfile = fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: JSON.stringify({ ...profile, height: 168 }),
     });
-    assert.equal(clearWardrobe.status, 204, logs.value);
-    assert.equal(clearProfile.status, 204, logs.value);
+    const clearPersonalData = fetch(`${origin}/api/personal-data`, {
+      method: "DELETE",
+      headers: {
+        ...userA,
+        [generationHeader]: "initial",
+        [clearRequestHeader]: clearRequestId,
+      },
+    });
+    const [racingGarmentResults, racingProfileResult, clearResult] = await Promise.all([
+      Promise.all(racingGarments),
+      racingProfile,
+      clearPersonalData,
+    ]);
+    assert.ok(racingGarmentResults.every((response) => [201, 409].includes(response.status)), logs.value);
+    assert.ok([200, 409].includes(racingProfileResult.status), logs.value);
+    assert.equal(clearResult.status, 204, logs.value);
+    const clearGeneration = clearResult.headers.get(generationHeader);
+    assert.match(clearGeneration, /^cloud-[0-9a-f-]{36}$/);
     assert.equal(
       (await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json())).items.length,
       0,
@@ -334,22 +488,116 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       (await fetch(`${origin}/api/profile`, { headers: userB }).then((response) => response.json())).profile.height,
       174,
     );
+    const staleWardrobe = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: garmentForm(),
+    });
+    assert.equal(staleWardrobe.status, 409);
+    assert.equal(staleWardrobe.headers.get(generationHeader), clearGeneration);
+    const staleProfile = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json" },
+      body: JSON.stringify(profile),
+    });
+    assert.equal(staleProfile.status, 409);
+    const clearedDraftReplayForm = garmentForm();
+    clearedDraftReplayForm.set("id", concurrentDraftId);
+    const clearedDraftReplay = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: { ...userA, [generationHeader]: clearGeneration },
+      body: clearedDraftReplayForm,
+    });
+    assert.equal(clearedDraftReplay.status, 410, logs.value);
+    const freshProfile = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userA, "content-type": "application/json", [generationHeader]: clearGeneration },
+      body: JSON.stringify({ ...profile, height: 169 }),
+    });
+    assert.equal(freshProfile.status, 200, logs.value);
+    const freshGarmentForm = garmentForm();
+    freshGarmentForm.set("id", `w-${crypto.randomUUID()}`);
+    const freshGarment = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: { ...userA, [generationHeader]: clearGeneration },
+      body: freshGarmentForm,
+    });
+    assert.equal(freshGarment.status, 201, logs.value);
+    const freshGarmentItem = (await freshGarment.json()).item;
+
+    const replayClear = await fetch(`${origin}/api/personal-data`, {
+      method: "DELETE",
+      headers: {
+        ...userA,
+        [generationHeader]: "initial",
+        [clearRequestHeader]: clearRequestId,
+      },
+    });
+    assert.equal(replayClear.status, 204, logs.value);
+    assert.equal(replayClear.headers.get(generationHeader), clearGeneration);
     assert.equal(
-      (await fetch(`${origin}/api/wardrobe?scope=all`, { method: "DELETE", headers: userA })).status,
-      204,
+      (await fetch(`${origin}/api/profile`, { headers: userA }).then((response) => response.json())).profile.height,
+      169,
     );
-    assert.equal(
-      (await fetch(`${origin}/api/profile`, { method: "DELETE", headers: userA })).status,
-      204,
+    assert.ok(
+      (await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json())).items
+        .some((entry) => entry.id === freshGarmentItem.id),
     );
 
+    const delayedOldClear = await fetch(`${origin}/api/personal-data`, {
+      method: "DELETE",
+      headers: {
+        ...userA,
+        [generationHeader]: "initial",
+        [clearRequestHeader]: `clear-${crypto.randomUUID()}`,
+      },
+    });
+    assert.equal(delayedOldClear.status, 409, logs.value);
+    assert.equal(delayedOldClear.headers.get(generationHeader), clearGeneration);
+    assert.equal(
+      (await fetch(`${origin}/api/profile`, { headers: userA }).then((response) => response.json())).profile.height,
+      169,
+    );
+
+    const competingClearRequestIds = [
+      `clear-${crypto.randomUUID()}`,
+      `clear-${crypto.randomUUID()}`,
+    ];
+    const competingClears = await Promise.all(
+      competingClearRequestIds.map((requestId) => fetch(`${origin}/api/personal-data`, {
+        method: "DELETE",
+        headers: {
+          ...userA,
+          [generationHeader]: clearGeneration,
+          [clearRequestHeader]: requestId,
+        },
+      })),
+    );
+    assert.deepEqual(competingClears.map((response) => response.status).sort(), [204, 409]);
+    const winningClearIndex = competingClears.findIndex((response) => response.status === 204);
+    const secondGeneration = competingClears[winningClearIndex].headers.get(generationHeader);
+    assert.match(secondGeneration, /^cloud-[0-9a-f-]{36}$/);
+    assert.notEqual(secondGeneration, clearGeneration);
+    const winningReplay = await fetch(`${origin}/api/personal-data`, {
+      method: "DELETE",
+      headers: {
+        ...userA,
+        [generationHeader]: clearGeneration,
+        [clearRequestHeader]: competingClearRequestIds[winningClearIndex],
+      },
+    });
+    assert.equal(winningReplay.status, 204, logs.value);
+    assert.equal(winningReplay.headers.get(generationHeader), secondGeneration);
+
     const quotaUser = { "oai-authenticated-user-email": `quota-${runId}@example.com` };
+    const quotaReplayId = `w-${crypto.randomUUID()}`;
     for (let start = 0; start < 199; start += 20) {
       const count = Math.min(20, 199 - start);
       const responses = await Promise.all(
         Array.from({ length: count }, (_, index) => {
           const quotaForm = garmentForm();
           quotaForm.set("name", `配额衣物 ${start + index + 1}`);
+          if (start + index === 0) quotaForm.set("id", quotaReplayId);
           return fetch(`${origin}/api/wardrobe`, {
             method: "POST",
             headers: quotaUser,
@@ -379,6 +627,14 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       body: garmentForm(),
     });
     assert.equal(overLimit.status, 409);
+    const quotaReplayForm = garmentForm();
+    quotaReplayForm.set("id", quotaReplayId);
+    const quotaReplay = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: quotaUser,
+      body: quotaReplayForm,
+    });
+    assert.equal(quotaReplay.status, 200, logs.value);
     assert.equal(
       (await fetch(`${origin}/api/wardrobe?scope=all`, { method: "DELETE", headers: quotaUser })).status,
       204,

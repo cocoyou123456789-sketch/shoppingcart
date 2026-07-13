@@ -10,6 +10,7 @@ export type ShopCategory = ClosetCategory | "美妆" | "装饰";
 
 export type WardrobeItem = {
   id: string;
+  clientId?: string;
   name: string;
   category: ClosetCategory;
   color: string;

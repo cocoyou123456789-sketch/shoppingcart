@@ -1,5 +1,13 @@
 import { getRawDb, getWardrobeImages } from "../../../db";
+import {
+  currentDataGeneration,
+  dataGenerationHeaders,
+  ensureDataGenerationTable,
+  requestDataGeneration,
+  staleDataGenerationResponse,
+} from "../../lib/data-generation";
 import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
+import { isClientWardrobeId, wardrobeCloudId } from "../../lib/wardrobe-id.mjs";
 
 const ALLOWED_CATEGORIES = new Set(["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"]);
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -7,7 +15,6 @@ const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 512 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const MAX_WARDROBE_ITEMS = 200;
-const PRIVATE_JSON_HEADERS = { "cache-control": "private, no-store" };
 const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
   let entry = value;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -221,7 +228,7 @@ async function hasMatchingImageSignature(file: File) {
   return false;
 }
 
-async function ensureWardrobeTables(db: D1Database) {
+export async function ensureWardrobeTables(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_items (
       id TEXT PRIMARY KEY NOT NULL,
@@ -251,6 +258,22 @@ async function ensureWardrobeTables(db: D1Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS wardrobe_cleanup_owner_idx ON wardrobe_image_cleanup (owner_email)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_sync_keys (
+      owner_email TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (owner_email, client_id)
+    )`),
+    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS wardrobe_sync_item_idx ON wardrobe_sync_keys (owner_email, item_id)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS personal_data_clear_images (
+      owner_email TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      image_key TEXT NOT NULL,
+      PRIMARY KEY (owner_email, request_id, image_key)
+    )`),
   ]);
 }
 
@@ -268,7 +291,10 @@ async function cleanupPendingImages(db: D1Database) {
     for (const row of pending.results) {
       try {
         await images.delete(row.image_key);
-        await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(row.image_key).run();
+        await db.batch([
+          db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(row.image_key),
+          db.prepare("DELETE FROM personal_data_clear_images WHERE image_key = ?").bind(row.image_key),
+        ]);
       } catch {
         // Keep the outbox row so a later request can safely retry cleanup.
       }
@@ -281,6 +307,7 @@ async function cleanupPendingImages(db: D1Database) {
 function rowToItem(row: Record<string, unknown>) {
   return {
     id: row.id,
+    clientId: row.client_id ?? undefined,
     name: row.name,
     category: row.category,
     color: row.color,
@@ -305,14 +332,22 @@ export async function GET(request: Request) {
     if (!owner) return unauthorizedJson();
     const db = await getRawDb();
     await ensureWardrobeTables(db);
+    const generation = await currentDataGeneration(db, owner);
     await cleanupPendingImages(db);
     const result = await db
-      .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? ORDER BY created_at DESC")
+      .prepare(`SELECT wardrobe_items.*, wardrobe_sync_keys.client_id AS client_id
+        FROM wardrobe_items
+        LEFT JOIN wardrobe_sync_keys
+          ON wardrobe_sync_keys.owner_email = wardrobe_items.owner_email
+          AND wardrobe_sync_keys.item_id = wardrobe_items.id
+          AND wardrobe_sync_keys.state = 'active'
+        WHERE wardrobe_items.owner_email = ?
+        ORDER BY wardrobe_items.created_at DESC`)
       .bind(owner)
       .all<Record<string, unknown>>();
     return Response.json(
-      { items: result.results.map(rowToItem), limit: MAX_WARDROBE_ITEMS },
-      { headers: PRIVATE_JSON_HEADERS },
+      { items: result.results.map(rowToItem), limit: MAX_WARDROBE_ITEMS, generation },
+      { headers: dataGenerationHeaders(generation) },
     );
   } catch {
     return Response.json({ error: "wardrobe temporarily unavailable" }, { status: 503 });
@@ -339,19 +374,6 @@ export async function POST(request: Request) {
       limitedRequest = limited.request;
     } catch {
       return Response.json({ error: "invalid form data" }, { status: 400 });
-    }
-    const db = await getRawDb();
-    await ensureWardrobeTables(db);
-    await cleanupPendingImages(db);
-    const count = await db
-      .prepare("SELECT COUNT(*) AS total FROM wardrobe_items WHERE owner_email = ?")
-      .bind(owner)
-      .first<{ total: number }>();
-    if (Number(count?.total ?? 0) >= MAX_WARDROBE_ITEMS) {
-      return Response.json(
-        { error: `wardrobe limit reached (${MAX_WARDROBE_ITEMS})`, limit: MAX_WARDROBE_ITEMS },
-        { status: 409 },
-      );
     }
     let form: FormData;
     try {
@@ -380,7 +402,54 @@ export async function POST(request: Request) {
       return Response.json({ error: "invalid garment measurement" }, { status: 400 });
     }
 
-    const id = `w-${crypto.randomUUID()}`;
+    const db = await getRawDb();
+    await ensureWardrobeTables(db);
+    await ensureDataGenerationTable(db);
+    await cleanupPendingImages(db);
+    const requestedGeneration = requestDataGeneration(request);
+    const activeGeneration = await currentDataGeneration(db, owner);
+    if (!requestedGeneration || requestedGeneration !== activeGeneration) {
+      return staleDataGenerationResponse(activeGeneration);
+    }
+    const requestedClientId = String(form.get("id") ?? "").trim();
+    const clientId = isClientWardrobeId(requestedClientId)
+      ? requestedClientId.toLowerCase()
+      : null;
+    const id = (clientId ? await wardrobeCloudId(owner, clientId) : null) ?? `w-${crypto.randomUUID()}`;
+    if (clientId) {
+      const syncKey = await db
+        .prepare("SELECT item_id, state FROM wardrobe_sync_keys WHERE owner_email = ? AND client_id = ?")
+        .bind(owner, clientId)
+        .first<{ item_id: string; state: string }>();
+      if (syncKey?.state === "deleted") {
+        return Response.json(
+          { error: "this local wardrobe item was deleted" },
+          { status: 410, headers: dataGenerationHeaders(activeGeneration) },
+        );
+      }
+      if (syncKey?.state === "active") {
+        const existing = await db
+          .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? AND id = ?")
+          .bind(owner, syncKey.item_id)
+          .first<Record<string, unknown>>();
+        if (existing) {
+          return Response.json(
+            { item: rowToItem({ ...existing, client_id: clientId }), replayed: true },
+            { status: 200, headers: dataGenerationHeaders(activeGeneration) },
+          );
+        }
+      }
+    }
+    const count = await db
+      .prepare("SELECT COUNT(*) AS total FROM wardrobe_items WHERE owner_email = ?")
+      .bind(owner)
+      .first<{ total: number }>();
+    if (Number(count?.total ?? 0) >= MAX_WARDROBE_ITEMS) {
+      return Response.json(
+        { error: `wardrobe limit reached (${MAX_WARDROBE_ITEMS})`, limit: MAX_WARDROBE_ITEMS },
+        { status: 409, headers: dataGenerationHeaders(activeGeneration) },
+      );
+    }
     const photo = form.get("photo");
     let imageKey: string | null = null;
     let imageType: string | null = null;
@@ -423,19 +492,56 @@ export async function POST(request: Request) {
     };
 
     try {
-      const insertResult = await db
-        .prepare(`INSERT INTO wardrobe_items (
-          id, owner_email, name, category, color, color_name, size, source, source_url,
-          image_key, image_type, season, style, chest, waist, hips, length, confidence
-        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM wardrobe_items WHERE owner_email = ?) < ?`)
-        .bind(
-          values.id, values.owner, values.name, values.category, values.color, values.colorName,
-          values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
-          values.season, values.style, values.chest, values.waist, values.hips, values.length,
-          values.confidence, owner, MAX_WARDROBE_ITEMS,
-        )
-        .run();
+      let insertResult: D1Result<unknown>;
+      if (clientId) {
+        const batchResults = await db.batch([
+          db.prepare(`INSERT OR IGNORE INTO wardrobe_sync_keys (
+            owner_email, client_id, item_id, state, created_at, updated_at
+          ) SELECT ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          WHERE (SELECT COUNT(*) FROM wardrobe_items WHERE owner_email = ?) < ?
+            AND COALESCE(
+              (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+              'initial'
+            ) = ?`)
+            .bind(owner, clientId, id, owner, MAX_WARDROBE_ITEMS, owner, requestedGeneration),
+          db.prepare(`INSERT OR IGNORE INTO wardrobe_items (
+            id, owner_email, name, category, color, color_name, size, source, source_url,
+            image_key, image_type, season, style, chest, waist, hips, length, confidence
+          ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM wardrobe_sync_keys
+            WHERE owner_email = ? AND client_id = ? AND item_id = ? AND state = 'active'
+          ) AND COALESCE(
+            (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+            'initial'
+          ) = ?`)
+            .bind(
+              values.id, values.owner, values.name, values.category, values.color, values.colorName,
+              values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
+              values.season, values.style, values.chest, values.waist, values.hips, values.length,
+              values.confidence, owner, clientId, id, owner, requestedGeneration,
+            ),
+        ]);
+        insertResult = batchResults[1];
+      } else {
+        insertResult = await db
+          .prepare(`INSERT INTO wardrobe_items (
+            id, owner_email, name, category, color, color_name, size, source, source_url,
+            image_key, image_type, season, style, chest, waist, hips, length, confidence
+          ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE (SELECT COUNT(*) FROM wardrobe_items WHERE owner_email = ?) < ?
+            AND COALESCE(
+              (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+              'initial'
+            ) = ?`)
+          .bind(
+            values.id, values.owner, values.name, values.category, values.color, values.colorName,
+            values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
+            values.season, values.style, values.chest, values.waist, values.hips, values.length,
+            values.confidence, owner, MAX_WARDROBE_ITEMS, owner, requestedGeneration,
+          )
+          .run();
+      }
       if (insertResult.meta.changes !== 1) {
         if (imageKey) {
           try {
@@ -445,9 +551,37 @@ export async function POST(request: Request) {
             // The durable cleanup row remains so a later request can safely retry.
           }
         }
+        const latestGeneration = await currentDataGeneration(db, owner);
+        if (latestGeneration !== requestedGeneration) {
+          return staleDataGenerationResponse(latestGeneration);
+        }
+        if (clientId) {
+          const syncKey = await db
+            .prepare("SELECT item_id, state FROM wardrobe_sync_keys WHERE owner_email = ? AND client_id = ?")
+            .bind(owner, clientId)
+            .first<{ item_id: string; state: string }>();
+          if (syncKey?.state === "deleted") {
+            return Response.json(
+              { error: "this local wardrobe item was deleted" },
+              { status: 410, headers: dataGenerationHeaders(latestGeneration) },
+            );
+          }
+          if (syncKey?.state === "active") {
+            const replay = await db
+              .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? AND id = ?")
+              .bind(owner, syncKey.item_id)
+              .first<Record<string, unknown>>();
+            if (replay) {
+              return Response.json(
+                { item: rowToItem({ ...replay, client_id: clientId }), replayed: true },
+                { status: 200, headers: dataGenerationHeaders(latestGeneration) },
+              );
+            }
+          }
+        }
         return Response.json(
           { error: `wardrobe limit reached (${MAX_WARDROBE_ITEMS})`, limit: MAX_WARDROBE_ITEMS },
-          { status: 409 },
+          { status: 409, headers: dataGenerationHeaders(latestGeneration) },
         );
       }
     } catch (error) {
@@ -459,11 +593,25 @@ export async function POST(request: Request) {
           // The durable cleanup row remains so a later request can retry safely.
         }
       }
+      const replay = await db
+        .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? AND id = ?")
+        .bind(owner, id)
+        .first<Record<string, unknown>>();
+      if (replay) {
+        return Response.json(
+          { item: rowToItem({ ...replay, client_id: clientId }), replayed: true },
+          { status: 200, headers: dataGenerationHeaders(requestedGeneration) },
+        );
+      }
       throw error;
     }
     if (imageKey) {
       try {
-        await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
+        await db.prepare(`DELETE FROM wardrobe_image_cleanup
+          WHERE image_key = ? AND EXISTS (
+            SELECT 1 FROM wardrobe_items
+            WHERE owner_email = ? AND id = ? AND image_key = ?
+          )`).bind(imageKey, owner, id, imageKey).run();
       } catch {
         // A later cleanup pass removes rows that now reference a saved garment.
       }
@@ -472,6 +620,7 @@ export async function POST(request: Request) {
     return Response.json({
       item: {
         id: values.id,
+        clientId: clientId ?? undefined,
         name: values.name,
         category: values.category,
         color: values.color,
@@ -488,7 +637,7 @@ export async function POST(request: Request) {
         length: values.length ?? undefined,
         confidence: values.confidence,
       },
-    }, { status: 201 });
+    }, { status: 201, headers: dataGenerationHeaders(requestedGeneration) });
   } catch {
     return Response.json({ error: "wardrobe temporarily unavailable" }, { status: 503 });
   }
@@ -500,75 +649,140 @@ export async function DELETE(request: Request) {
     if (!owner) return unauthorizedJson();
     const searchParams = new URL(request.url).searchParams;
     const id = searchParams.get("id")?.trim();
+    const requestedClientId = searchParams.get("clientId")?.trim();
+    const clientId = requestedClientId && isClientWardrobeId(requestedClientId)
+      ? requestedClientId.toLowerCase()
+      : null;
     const deleteAll = searchParams.get("scope") === "all";
-    if (!id && !deleteAll) return Response.json({ error: "id is required" }, { status: 400 });
+    if (requestedClientId && !clientId) {
+      return Response.json({ error: "invalid clientId" }, { status: 400 });
+    }
+    if (!id && !clientId && !deleteAll) return Response.json({ error: "id or clientId is required" }, { status: 400 });
     const db = await getRawDb();
     await ensureWardrobeTables(db);
+    const requestedGeneration = requestDataGeneration(request);
+    const activeGeneration = await currentDataGeneration(db, owner);
+    if (!requestedGeneration || requestedGeneration !== activeGeneration) {
+      return staleDataGenerationResponse(activeGeneration);
+    }
     await cleanupPendingImages(db);
 
     if (deleteAll) {
-      const [items, orphanedImages] = await Promise.all([
-        db
-          .prepare("SELECT id, image_key FROM wardrobe_items WHERE owner_email = ?")
-          .bind(owner)
-          .all<{ id: string; image_key: string | null }>(),
-        db
-          .prepare(`SELECT image_key FROM wardrobe_image_cleanup
-            WHERE owner_email = ? AND created_at <= datetime('now', '-10 minutes')`)
-          .bind(owner)
-          .all<{ image_key: string }>(),
+      const items = await db
+        .prepare(`SELECT image_key FROM wardrobe_items WHERE owner_email = ? AND image_key IS NOT NULL AND COALESCE(
+          (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+          'initial'
+        ) = ?`)
+        .bind(owner, owner, requestedGeneration)
+        .all<{ image_key: string }>();
+      await db.batch([
+        db.prepare(`INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
+          SELECT image_key, owner_email, CURRENT_TIMESTAMP FROM wardrobe_items
+          WHERE owner_email = ? AND image_key IS NOT NULL AND COALESCE(
+            (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+            'initial'
+          ) = ?`)
+          .bind(owner, owner, requestedGeneration),
+        db.prepare(`UPDATE wardrobe_sync_keys SET state = 'deleted', updated_at = CURRENT_TIMESTAMP
+          WHERE owner_email = ? AND COALESCE(
+            (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+            'initial'
+          ) = ?`)
+          .bind(owner, owner, requestedGeneration),
+        db.prepare(`DELETE FROM wardrobe_items WHERE owner_email = ? AND COALESCE(
+          (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+          'initial'
+        ) = ?`)
+          .bind(owner, owner, requestedGeneration),
       ]);
-      const itemIds = items.results.map((row) => row.id);
-      const orphanedKeys = orphanedImages.results.map((row) => row.image_key);
-      const imageKeys = [
-        ...new Set([
-          ...items.results.flatMap((row) => (row.image_key ? [row.image_key] : [])),
-          ...orphanedKeys,
-        ]),
-      ];
-      const images = await getWardrobeImages();
-      for (let start = 0; start < imageKeys.length; start += 1000) {
-        await images.delete(imageKeys.slice(start, start + 1000));
+      const latestGeneration = await currentDataGeneration(db, owner);
+      if (latestGeneration !== requestedGeneration) {
+        return staleDataGenerationResponse(latestGeneration);
       }
-
-      const statements: D1PreparedStatement[] = [];
-      for (let start = 0; start < itemIds.length; start += 99) {
-        const ids = itemIds.slice(start, start + 99);
-        statements.push(
-          db
-            .prepare(
-              `DELETE FROM wardrobe_items WHERE owner_email = ? AND id IN (${ids.map(() => "?").join(", ")})`,
-            )
-            .bind(owner, ...ids),
-        );
-      }
-      for (let start = 0; start < orphanedKeys.length; start += 99) {
-        const keys = orphanedKeys.slice(start, start + 99);
-        statements.push(
-          db
-            .prepare(
+      const imageKeys = items.results.map((row) => row.image_key);
+      if (imageKeys.length) {
+        try {
+          const images = await getWardrobeImages();
+          for (let start = 0; start < imageKeys.length; start += 1000) {
+            await images.delete(imageKeys.slice(start, start + 1000));
+          }
+          for (let start = 0; start < imageKeys.length; start += 99) {
+            const keys = imageKeys.slice(start, start + 99);
+            await db.prepare(
               `DELETE FROM wardrobe_image_cleanup WHERE owner_email = ? AND image_key IN (${keys.map(() => "?").join(", ")})`,
-            )
-            .bind(owner, ...keys),
-        );
+            ).bind(owner, ...keys).run();
+          }
+        } catch {
+          // Rows are already inaccessible; the cleanup outbox retries object deletion.
+        }
       }
-      if (statements.length) await db.batch(statements);
-      return new Response(null, { status: 204 });
+      return new Response(null, { status: 204, headers: dataGenerationHeaders(latestGeneration) });
     }
 
+    const resolvedId = clientId
+      ? (await wardrobeCloudId(owner, clientId))!
+      : id!;
     const found = await db
-      .prepare("SELECT image_key FROM wardrobe_items WHERE owner_email = ? AND id = ?")
-      .bind(owner, id!)
-      .first<{ image_key: string | null }>();
+      .prepare(`SELECT wardrobe_items.image_key, wardrobe_sync_keys.client_id
+        FROM wardrobe_items
+        LEFT JOIN wardrobe_sync_keys
+          ON wardrobe_sync_keys.owner_email = wardrobe_items.owner_email
+          AND wardrobe_sync_keys.item_id = wardrobe_items.id
+        WHERE wardrobe_items.owner_email = ? AND wardrobe_items.id = ? AND COALESCE(
+        (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+        'initial'
+      ) = ?`)
+      .bind(owner, resolvedId, owner, requestedGeneration)
+      .first<{ image_key: string | null; client_id: string | null }>();
+    const statements: D1PreparedStatement[] = [];
+    const tombstoneClientId = clientId ?? found?.client_id ?? null;
+    if (tombstoneClientId) {
+      statements.push(
+        db.prepare(`INSERT INTO wardrobe_sync_keys (
+          owner_email, client_id, item_id, state, created_at, updated_at
+        ) SELECT ?, ?, ?, 'deleted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        WHERE COALESCE(
+          (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+          'initial'
+        ) = ?
+        ON CONFLICT(owner_email, client_id) DO UPDATE SET
+          item_id = excluded.item_id, state = 'deleted', updated_at = CURRENT_TIMESTAMP`)
+          .bind(owner, tombstoneClientId, resolvedId, owner, requestedGeneration),
+      );
+    }
+    if (found?.image_key) {
+      statements.push(
+        db.prepare(`INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
+          SELECT image_key, owner_email, CURRENT_TIMESTAMP FROM wardrobe_items
+          WHERE owner_email = ? AND id = ? AND image_key IS NOT NULL AND COALESCE(
+            (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+            'initial'
+          ) = ?`)
+          .bind(owner, resolvedId, owner, requestedGeneration),
+      );
+    }
+    statements.push(
+      db.prepare(`DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ? AND COALESCE(
+        (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+        'initial'
+      ) = ?`).bind(owner, resolvedId, owner, requestedGeneration),
+    );
+    await db.batch(statements);
+    const latestGeneration = await currentDataGeneration(db, owner);
+    if (latestGeneration !== requestedGeneration) {
+      return staleDataGenerationResponse(latestGeneration);
+    }
     if (found?.image_key) {
       try {
         await (await getWardrobeImages()).delete(found.image_key);
+        await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?")
+          .bind(found.image_key)
+          .run();
       } catch {
-        return Response.json({ error: "image deletion temporarily unavailable" }, { status: 503 });
+        // The item is inaccessible and the cleanup outbox retains the object key.
       }
     }
-    await db.prepare("DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ?").bind(owner, id!).run();
-    return new Response(null, { status: 204 });
+    return new Response(null, { status: 204, headers: dataGenerationHeaders(latestGeneration) });
   } catch {
     return Response.json({ error: "wardrobe temporarily unavailable" }, { status: 503 });
   }

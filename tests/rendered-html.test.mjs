@@ -41,13 +41,15 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, avatar, deferredAvatar, wardrobeRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
+  const [page, layout, app, avatar, avatarRuntime, deferredAvatar, wardrobeRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/Avatar3D.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/avatar-runtime.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/components/DeferredAvatar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/personal-data/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/request-owner.ts", import.meta.url), "utf8"),
@@ -76,9 +78,13 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /CLOUD_MUTATION_TIMEOUT_MS/);
   assert.match(app, /CLOUD_UPLOAD_TIMEOUT_MS/);
   assert.match(app, /pendingMutations\.forEach\(\(mutation\) => mutation\.controller\.abort\(\)\)/);
+  assert.match(app, /BroadcastChannel\("songsong-closet:coordination:v1"\)/);
+  assert.match(app, /snapshotMatchesClearSignal/);
+  assert.match(app, /wardrobeCloudId/);
+  assert.match(app, /\/api\/personal-data/);
   assert.ok(
     app.indexOf("latestSnapshot.current = emptySnapshot") <
-      app.indexOf('fetchCloudMutation("/api/wardrobe?scope=all"'),
+      app.indexOf('"/api/personal-data"'),
     "device state must be cleared before cloud deletion begins",
   );
   assert.match(app, /cloudItemIds\.current\.has/);
@@ -90,8 +96,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /1000 \/ 30/);
   assert.match(avatar, /controls\.update\(deltaSeconds\)/);
   assert.match(avatar, /runtimeRef/);
-  assert.match(avatar, /disposeObject3D\(previousAvatar\)/);
-  assert.match(avatar, /shadowMap\.needsUpdate = true/);
+  assert.match(avatar, /replaceRuntimeAvatar\(runtime, nextAvatar, disposeObject3D\)/);
+  assert.match(avatarRuntime, /disposeAvatar\(previousAvatar\)/);
+  assert.match(avatarRuntime, /shadowMap\.needsUpdate = true/);
   assert.doesNotMatch(avatar, /\[sceneMetrics, sceneOutfit, compact, retryVersion\]/);
   assert.match(avatar, /role="group"/);
   assert.match(deferredAvatar, /requestIdleCallback/);
@@ -101,11 +108,22 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(wardrobeRoute, /datetime\('now', '-10 minutes'\)/);
   assert.match(wardrobeRoute, /ALLOWED_IMAGE_TYPES/);
   assert.match(wardrobeRoute, /db\.batch/);
-  assert.match(wardrobeRoute, /image deletion temporarily unavailable/);
+  assert.match(wardrobeRoute, /wardrobe_image_cleanup/);
   assert.match(wardrobeRoute, /crc32/);
   assert.match(wardrobeRoute, /requestWithLimitedBody/);
   assert.match(wardrobeRoute, /reader\.cancel/);
   assert.match(wardrobeRoute, /headers\.delete\("transfer-encoding"\)/);
+  assert.match(wardrobeRoute, /owner_data_generations/);
+  assert.match(wardrobeRoute, /wardrobe_sync_keys/);
+  assert.match(wardrobeRoute, /state = 'deleted'/);
+  assert.match(wardrobeRoute, /wardrobeCloudId/);
+  assert.match(personalDataRoute, /db\.batch/);
+  assert.match(personalDataRoute, /personal_data_clear_operations/);
+  assert.match(personalDataRoute, /personal_data_clear_images/);
+  assert.match(personalDataRoute, /FROM wardrobe_image_cleanup/);
+  assert.match(personalDataRoute, /retry-after/);
+  assert.match(personalDataRoute, /DELETE FROM body_profiles/);
+  assert.match(personalDataRoute, /DELETE FROM wardrobe_items/);
   assert.match(styles, /\.save-button, \.icon-button, \.cart-list article > button \{ min-width: 44px; \}/);
   assert.match(styles, /\.choice-group legend[\s\S]*font-size: 12px;/);
   assert.match(hosting, /"d1": "DB"/);
@@ -117,6 +135,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await access(new URL("../drizzle/0000_complex_lady_deathstrike.sql", import.meta.url));
+  await access(new URL("../drizzle/0002_rapid_cerise.sql", import.meta.url));
+  await access(new URL("../drizzle/0003_smart_james_howlett.sql", import.meta.url));
   await access(new URL("../app/api/wardrobe/route.ts", import.meta.url));
   await access(new URL("../app/api/profile/route.ts", import.meta.url));
 });
@@ -134,6 +154,7 @@ test("rejects anonymous reads and writes to private wardrobe APIs", async () => 
     ["/api/profile", "GET"],
     ["/api/profile", "PUT"],
     ["/api/profile", "DELETE"],
+    ["/api/personal-data", "DELETE"],
     ["/api/wardrobe/image?id=w-test", "GET"],
   ]) {
     const response = await worker.fetch(

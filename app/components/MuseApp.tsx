@@ -1,13 +1,30 @@
 /* eslint-disable @next/next/no-img-element -- user-selected object URLs and private R2 images should not pass through a public optimizer */
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 import { DeferredAvatar } from "./DeferredAvatar";
 import { extractGarmentMeasurements } from "../lib/garment-analysis.mjs";
 import { rankOutfitSelections } from "../lib/outfit-ranking.mjs";
 import { preservePersistedPhotos } from "../lib/device-storage.mjs";
+import {
+  clearMutationAction,
+  clearMarkerStorageKey,
+  compareClearSignals,
+  coordinationScope,
+  createClearSignal,
+  guardedSnapshotWrite,
+  parseClearMarker,
+  serializeClearMarker,
+  snapshotMatchesClearSignal,
+} from "../lib/storage-coordination.mjs";
+import {
+  hasPendingWardrobeItems,
+  removeWardrobeIdentity,
+  replaceSyncedWardrobeItem,
+} from "../lib/wardrobe-sync.mjs";
+import { isClientWardrobeId, wardrobeCloudId } from "../lib/wardrobe-id.mjs";
 import {
   BODY_PRESETS,
   PRODUCTS,
@@ -43,11 +60,15 @@ type LocalSnapshot = {
   cartProductIds?: string[];
   savedProductIds?: string[];
   cloudItemIds?: string[];
+  cloudGeneration?: string;
+  deletedWardrobeClientIds?: string[];
   dailyPreferences?: DailyPreferences;
+  clearSignal?: string;
   updatedAt?: string;
 };
 
 type DeviceSaveResult = "complete" | "metadata-only" | "failed";
+type GuardedDeviceSaveResult = DeviceSaveResult | "superseded";
 type DataMode = "连接中" | "云端已同步" | "部分已同步" | "本机已保存" | "仅本次有效";
 type PendingCloudMutation = {
   promise: Promise<Response>;
@@ -131,6 +152,8 @@ const MAX_CLIENT_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_WARDROBE_ITEMS = 200;
 const CLOUD_MUTATION_TIMEOUT_MS = 9_000;
 const CLOUD_UPLOAD_TIMEOUT_MS = 60_000;
+const DATA_GENERATION_HEADER = "x-songsong-data-generation";
+const CLEAR_REQUEST_HEADER = "x-songsong-clear-request";
 const SKIN_TONES = [
   ["#f2d4bd", "浅暖色"],
   ["#dfb08d", "暖米色"],
@@ -274,11 +297,22 @@ function normalizeDailyPreferences(value: unknown): DailyPreferences | undefined
   };
 }
 
-function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
+function readActiveClearSignal(storageKey: string) {
+  try {
+    return parseClearMarker(
+      window.localStorage.getItem(clearMarkerStorageKey(storageKey)),
+    )?.signal ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readLocalSnapshot(storageKey: string, activeClearSignal: string | null): LocalSnapshot | null {
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<LocalSnapshot>;
+    if (!snapshotMatchesClearSignal(parsed.clearSignal, activeClearSignal)) return null;
     if (!Array.isArray(parsed.wardrobe) || !parsed.metrics || typeof parsed.metrics !== "object") {
       return null;
     }
@@ -292,6 +326,9 @@ function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
           typeof item.color === "string",
       ).map((item) => ({
         ...item,
+        clientId: item.clientId && isClientWardrobeId(item.clientId)
+          ? item.clientId
+          : undefined,
         imageUrl: item.imageUrl?.startsWith("blob:") ? undefined : item.imageUrl,
       })),
     );
@@ -313,7 +350,16 @@ function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
       cloudItemIds: Array.isArray(parsed.cloudItemIds)
         ? parsed.cloudItemIds.filter((id): id is string => typeof id === "string")
         : undefined,
+      cloudGeneration: typeof parsed.cloudGeneration === "string"
+        ? parsed.cloudGeneration
+        : undefined,
+      deletedWardrobeClientIds: Array.isArray(parsed.deletedWardrobeClientIds)
+        ? parsed.deletedWardrobeClientIds.filter(
+            (id): id is string => typeof id === "string" && isClientWardrobeId(id),
+          )
+        : undefined,
       dailyPreferences: normalizeDailyPreferences(parsed.dailyPreferences),
+      clearSignal: parsed.clearSignal,
       updatedAt: parsed.updatedAt,
     };
   } catch {
@@ -331,8 +377,11 @@ function writeLocalSnapshot(
     cartProductIds,
     savedProductIds,
     cloudItemIds,
+    cloudGeneration,
+    deletedWardrobeClientIds,
     dailyPreferences,
   }: Omit<LocalSnapshot, "version" | "updatedAt">,
+  clearSignal: string | null,
 ): DeviceSaveResult {
   const updatedAt = new Date().toISOString();
   const serialize = (snapshotWardrobe: WardrobeItem[]) => JSON.stringify({
@@ -344,7 +393,10 @@ function writeLocalSnapshot(
       cartProductIds,
       savedProductIds,
       cloudItemIds,
+      cloudGeneration,
+      deletedWardrobeClientIds,
       dailyPreferences,
+      clearSignal: clearSignal ?? undefined,
       updatedAt,
     });
   try {
@@ -377,6 +429,15 @@ function removeLocalSnapshot(storageKey: string) {
   }
 }
 
+function persistClearMarker(storageKey: string, marker: string) {
+  try {
+    window.localStorage.setItem(clearMarkerStorageKey(storageKey), marker);
+    return window.localStorage.getItem(clearMarkerStorageKey(storageKey)) === marker;
+  } catch {
+    return false;
+  }
+}
+
 function isClearedLocalSnapshot(storageKey: string) {
   try {
     const raw = window.localStorage.getItem(storageKey);
@@ -400,6 +461,8 @@ function isClearedLocalSnapshot(storageKey: string) {
       parsed.savedProductIds.length === 0 &&
       Array.isArray(parsed.cloudItemIds) &&
       parsed.cloudItemIds.length === 0 &&
+      Array.isArray(parsed.deletedWardrobeClientIds) &&
+      parsed.deletedWardrobeClientIds.length === 0 &&
       Boolean(dailyPreferences) &&
       Object.entries(DEFAULT_DAILY_PREFERENCES).every(
         ([key, value]) => dailyPreferences?.[key as keyof DailyPreferences] === value,
@@ -506,8 +569,51 @@ async function photoToDeviceImage(file?: File) {
   }
 }
 
+function wardrobeItemForm(item: WardrobeItem, photo?: File) {
+  const form = new FormData();
+  const fields: Array<keyof WardrobeItem> = [
+    "id",
+    "name",
+    "category",
+    "color",
+    "colorName",
+    "size",
+    "sourceUrl",
+    "season",
+    "style",
+    "chest",
+    "waist",
+    "hips",
+    "length",
+    "confidence",
+  ];
+  for (const field of fields) {
+    const value = field === "id" ? (item.clientId ?? item.id) : item[field];
+    if (value !== undefined && value !== null) form.append(field, String(value));
+  }
+  if (photo) form.append("photo", photo);
+  return form;
+}
+
+async function devicePhotoFile(item: WardrobeItem) {
+  if (!item.imageUrl?.startsWith("data:")) return undefined;
+  try {
+    const response = await fetch(item.imageUrl);
+    const blob = await response.blob();
+    if (!CLIENT_IMAGE_TYPES.has(blob.type.toLowerCase()) || blob.size > MAX_CLIENT_IMAGE_BYTES) {
+      return undefined;
+    }
+    const extension = blob.type === "image/png" ? "png" : blob.type === "image/webp" ? "webp" : "jpg";
+    return new File([blob], `wardrobe-${item.id}.${extension}`, { type: blob.type });
+  } catch {
+    return undefined;
+  }
+}
+
 export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const storageKey = useMemo(() => localSnapshotKey(storageOwner), [storageOwner]);
+  const clearMarkerKey = useMemo(() => clearMarkerStorageKey(storageKey), [storageKey]);
+  const clearScope = useMemo(() => coordinationScope(storageKey), [storageKey]);
   const [view, setView] = useState<View>("home");
   const [metrics, setMetrics] = useState<BodyMetrics>(DEFAULT_METRICS);
   const [wardrobe, setWardrobe] = useState<WardrobeItem[]>(SAMPLE_WARDROBE);
@@ -523,6 +629,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const [dataMode, setDataMode] = useState<DataMode>("连接中");
   const [ready, setReady] = useState(false);
   const [clearingData, setClearingData] = useState(false);
+  const [wardrobeSyncAttempt, setWardrobeSyncAttempt] = useState(0);
   const hydrated = useRef(false);
   const storageWarningShown = useRef(false);
   const storageFailureShown = useRef(false);
@@ -532,6 +639,15 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const cartProductIds = useRef(new Set<string>());
   const mutationEpoch = useRef(0);
   const pendingCloudMutations = useRef(new Set<PendingCloudMutation>());
+  const clearChannel = useRef<BroadcastChannel | null>(null);
+  const observedClearSignal = useRef<string | null>(null);
+  const lastAppliedClearSignal = useRef<string | null>(null);
+  const pendingWardrobeSyncIds = useRef(new Set<string>());
+  const pendingWardrobeDeletionIds = useRef(new Set<string>());
+  const wardrobeCloudReady = useRef(false);
+  const profileCloudReady = useRef(false);
+  const cloudGeneration = useRef("initial");
+  const deletedWardrobeClientIds = useRef(new Set<string>());
   const latestSnapshot = useRef<Omit<LocalSnapshot, "version" | "updatedAt">>({
     wardrobe,
     metrics,
@@ -540,6 +656,8 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cartProductIds: [],
     savedProductIds: [],
     cloudItemIds: [],
+    cloudGeneration: "initial",
+    deletedWardrobeClientIds: [],
     dailyPreferences,
   });
   latestSnapshot.current = {
@@ -550,6 +668,8 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cartProductIds: cart.map((product) => product.id),
     savedProductIds,
     cloudItemIds: [...cloudItemIds.current],
+    cloudGeneration: cloudGeneration.current,
+    deletedWardrobeClientIds: [...deletedWardrobeClientIds.current],
     dailyPreferences,
   };
   cartProductIds.current = new Set(cart.map((product) => product.id));
@@ -561,7 +681,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   ) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-    const promise = fetch(input, { ...init, signal: controller.signal });
+    const headers = new Headers(init.headers);
+    if (!headers.has(DATA_GENERATION_HEADER)) {
+      headers.set(DATA_GENERATION_HEADER, cloudGeneration.current);
+    }
+    const promise = fetch(input, { ...init, headers, signal: controller.signal });
     const mutation = { promise, controller };
     pendingCloudMutations.current.add(mutation);
     void promise.then(
@@ -577,26 +701,244 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     return promise;
   }
 
+  function emptyPersonalSnapshot(): Omit<LocalSnapshot, "version" | "updatedAt"> {
+    return {
+      wardrobe: [],
+      metrics: DEFAULT_METRICS,
+      outfit: {},
+      mood: 62,
+      cartProductIds: [],
+      savedProductIds: [],
+      cloudItemIds: [],
+      cloudGeneration: cloudGeneration.current,
+      deletedWardrobeClientIds: [],
+      dailyPreferences: DEFAULT_DAILY_PREFERENCES,
+    };
+  }
+
+  const writeCurrentLocalSnapshot = useCallback(function writeCurrentLocalSnapshot(
+    snapshot = latestSnapshot.current,
+  ): GuardedDeviceSaveResult {
+    const activeSignal = readActiveClearSignal(storageKey);
+    return guardedSnapshotWrite(
+      observedClearSignal.current,
+      activeSignal,
+      () => writeLocalSnapshot(storageKey, snapshot, activeSignal),
+    );
+  }, [storageKey]);
+
+  const adoptStaleCloudGeneration = useCallback(function adoptStaleCloudGeneration(response: Response) {
+    if (response.status !== 409) return false;
+    const generation = response.headers.get(DATA_GENERATION_HEADER)?.trim();
+    if (!generation || generation === cloudGeneration.current) return false;
+    cloudGeneration.current = generation;
+    mutationEpoch.current += 1;
+    pendingCloudMutations.current.forEach((mutation) => mutation.controller.abort());
+    pendingWardrobeSyncIds.current.clear();
+    pendingWardrobeDeletionIds.current.clear();
+    deletedWardrobeClientIds.current.clear();
+    wardrobeCloudReady.current = false;
+    profileCloudReady.current = false;
+    cloudItemIds.current.clear();
+    cartProductIds.current.clear();
+    latestSnapshot.current = emptyPersonalSnapshot();
+    const localSignal = createClearSignal();
+    const marker = serializeClearMarker(localSignal);
+    try {
+      for (const targetStorageKey of new Set([storageKey, LOCAL_SNAPSHOT_KEY])) {
+        persistClearMarker(targetStorageKey, marker);
+        clearChannel.current?.postMessage({
+          type: "personal-data-cleared",
+          scope: coordinationScope(targetStorageKey),
+          marker,
+        });
+        removeLocalSnapshot(targetStorageKey);
+        persistClearMarker(targetStorageKey, marker);
+      }
+    } catch {
+      // Reloading still obtains the authoritative generation from the server.
+    }
+    observedClearSignal.current = localSignal;
+    lastAppliedClearSignal.current = localSignal;
+    window.location.reload();
+    return true;
+  }, [storageKey]);
+
+  useEffect(() => {
+    const activeSignal = readActiveClearSignal(storageKey);
+    observedClearSignal.current = activeSignal;
+    lastAppliedClearSignal.current = activeSignal;
+
+    const applyRemoteClear = (signal: string) => {
+      if (!signal) return;
+      const persistedSignal = readActiveClearSignal(storageKey);
+      const knownSignal = persistedSignal ?? observedClearSignal.current;
+      if (knownSignal && knownSignal !== signal) {
+        const ordering = compareClearSignals(signal, knownSignal);
+        if (ordering <= 0) return;
+      }
+      if (lastAppliedClearSignal.current === signal) return;
+      observedClearSignal.current = signal;
+      lastAppliedClearSignal.current = signal;
+      mutationEpoch.current += 1;
+      pendingCloudMutations.current.forEach((mutation) => mutation.controller.abort());
+      pendingWardrobeSyncIds.current.clear();
+      pendingWardrobeDeletionIds.current.clear();
+      deletedWardrobeClientIds.current.clear();
+      wardrobeCloudReady.current = false;
+      profileCloudReady.current = false;
+      cloudItemIds.current.clear();
+      cartProductIds.current.clear();
+      const emptySnapshot = emptyPersonalSnapshot();
+      latestSnapshot.current = emptySnapshot;
+      const localRemoved = removeLocalSnapshot(storageKey);
+      const markerSaved = persistClearMarker(
+        storageKey,
+        serializeClearMarker(signal),
+      );
+      flushSync(() => {
+        setCartOpen(false);
+        setAddOpen(false);
+        setCelebrationOpen(false);
+        setWardrobe([]);
+        setMetrics(DEFAULT_METRICS);
+        setOutfit({});
+        setMood(62);
+        setCart([]);
+        setSavedProductIds([]);
+        setDailyPreferences(DEFAULT_DAILY_PREFERENCES);
+        setReady(true);
+      });
+      hydrated.current = true;
+      const saveResult = writeCurrentLocalSnapshot(emptySnapshot);
+      const localCleared =
+        markerSaved &&
+        (localRemoved ||
+          (saveResult !== "failed" && saveResult !== "superseded") ||
+          isClearedLocalSnapshot(storageKey));
+      setDataMode(
+        usesDeviceOnlyStorage()
+          ? localCleared
+            ? "本机已保存"
+            : "仅本次有效"
+          : "部分已同步",
+      );
+      setToast(
+        localCleared
+          ? "另一个标签页已清除个人资料，这里也已同步清空"
+          : "页面资料已清空，但浏览器阻止清除本机副本",
+      );
+    };
+
+    const handlePageShow = () => {
+      const signal = readActiveClearSignal(storageKey);
+      if (signal && signal !== observedClearSignal.current) applyRemoteClear(signal);
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea !== window.localStorage || event.key !== clearMarkerKey) return;
+      const marker = parseClearMarker(event.newValue);
+      if (marker) applyRemoteClear(marker.signal);
+    };
+    const channel = typeof BroadcastChannel === "undefined"
+      ? null
+      : new BroadcastChannel("songsong-closet:coordination:v1");
+    clearChannel.current = channel;
+    if (channel) {
+      channel.onmessage = (event: MessageEvent) => {
+        const message = event.data as {
+          type?: unknown;
+          scope?: unknown;
+          marker?: unknown;
+          success?: unknown;
+          cloudGeneration?: unknown;
+        };
+        if (
+          message?.type === "personal-data-clear-finished" &&
+          message.scope === clearScope &&
+          typeof message.marker === "string"
+        ) {
+          const marker = parseClearMarker(message.marker);
+          if (!marker || marker.signal !== observedClearSignal.current) return;
+          const activeSignal = readActiveClearSignal(storageKey);
+          if (activeSignal && activeSignal !== marker.signal) return;
+          if (usesDeviceOnlyStorage()) {
+            const localCleared = isClearedLocalSnapshot(storageKey);
+            setDataMode(localCleared ? "本机已保存" : "仅本次有效");
+          } else if (message.success === true && typeof message.cloudGeneration === "string") {
+            cloudGeneration.current = message.cloudGeneration;
+            wardrobeCloudReady.current = true;
+            profileCloudReady.current = true;
+            const hasPending =
+              deletedWardrobeClientIds.current.size > 0 ||
+              hasPendingWardrobeItems(latestSnapshot.current.wardrobe, cloudItemIds.current);
+            setDataMode(hasPending ? "部分已同步" : "云端已同步");
+            writeCurrentLocalSnapshot();
+            setWardrobeSyncAttempt((current) => current + 1);
+          } else if (
+            message.success === false &&
+            typeof message.cloudGeneration === "string" &&
+            message.cloudGeneration !== cloudGeneration.current
+          ) {
+            cloudGeneration.current = message.cloudGeneration;
+            wardrobeCloudReady.current = false;
+            profileCloudReady.current = false;
+            latestSnapshot.current = {
+              ...emptyPersonalSnapshot(),
+              cloudGeneration: message.cloudGeneration,
+            };
+            writeCurrentLocalSnapshot();
+            window.location.reload();
+          } else {
+            setDataMode("部分已同步");
+          }
+          return;
+        }
+        if (
+          message?.type !== "personal-data-cleared" ||
+          message.scope !== clearScope ||
+          typeof message.marker !== "string"
+        ) return;
+        const marker = parseClearMarker(message.marker);
+        if (marker) applyRemoteClear(marker.signal);
+      };
+    }
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("pageshow", handlePageShow);
+      if (channel) channel.close();
+      if (clearChannel.current === channel) clearChannel.current = null;
+    };
+  }, [clearMarkerKey, clearScope, storageKey, writeCurrentLocalSnapshot]);
+
   useEffect(() => {
     let cancelled = false;
-    const local = readLocalSnapshot(storageKey);
-    const storedCloudItemIds = new Set(local?.cloudItemIds ?? []);
+    const hydrationEpoch = mutationEpoch.current;
+    wardrobeCloudReady.current = false;
+    profileCloudReady.current = false;
+    let local = readLocalSnapshot(storageKey, observedClearSignal.current);
+    let storedCloudItemIds = new Set(local?.cloudItemIds ?? []);
+    cloudGeneration.current = local?.cloudGeneration ?? "initial";
+    deletedWardrobeClientIds.current = new Set(local?.deletedWardrobeClientIds ?? []);
     cloudItemIds.current = new Set(storedCloudItemIds);
     const hydrateDeviceState = () => {
-      if (local) setWardrobe(local.wardrobe);
-      if (local?.metrics) setMetrics((current) => ({ ...current, ...local.metrics }));
-      if (local?.outfit) setOutfit(local.outfit);
-      if (typeof local?.mood === "number") setMood(local.mood);
-      if (local?.dailyPreferences) setDailyPreferences(local.dailyPreferences);
-      if (local?.cartProductIds) {
+      const deviceSnapshot = local;
+      if (deviceSnapshot) setWardrobe(deviceSnapshot.wardrobe);
+      if (deviceSnapshot?.metrics) setMetrics((current) => ({ ...current, ...deviceSnapshot.metrics }));
+      if (deviceSnapshot?.outfit) setOutfit(deviceSnapshot.outfit);
+      if (typeof deviceSnapshot?.mood === "number") setMood(deviceSnapshot.mood);
+      if (deviceSnapshot?.dailyPreferences) setDailyPreferences(deviceSnapshot.dailyPreferences);
+      if (deviceSnapshot?.cartProductIds) {
         setCart((current) => {
-          const next = productsForIds([...local.cartProductIds!, ...current.map((item) => item.id)]);
+          const next = productsForIds([...deviceSnapshot.cartProductIds!, ...current.map((item) => item.id)]);
           cartProductIds.current = new Set(next.map((item) => item.id));
           return next;
         });
       }
-      if (local?.savedProductIds) {
-        setSavedProductIds((current) => [...new Set([...local.savedProductIds!, ...current])]);
+      if (deviceSnapshot?.savedProductIds) {
+        setSavedProductIds((current) => [...new Set([...deviceSnapshot.savedProductIds!, ...current])]);
       }
       setDataMode("本机已保存");
       hydrated.current = true;
@@ -615,60 +957,155 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     const wardrobeRequest = fetch("/api/wardrobe", { signal: abortController.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Wardrobe unavailable");
-        return response.json() as Promise<{ items?: WardrobeItem[] }>;
+        return response.json() as Promise<{ items?: WardrobeItem[]; generation?: string }>;
       });
     const profileRequest = fetch("/api/profile", { signal: abortController.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Profile unavailable");
-        return response.json() as Promise<{ profile?: Partial<BodyMetrics> | null }>;
+        return response.json() as Promise<{ profile?: Partial<BodyMetrics> | null; generation?: string }>;
       });
 
-    void Promise.allSettled([wardrobeRequest, profileRequest]).then(([closetResult, profileResult]) => {
+    void Promise.allSettled([wardrobeRequest, profileRequest]).then(async ([closetResult, profileResult]) => {
       window.clearTimeout(requestTimeout);
-      if (cancelled) return;
+      if (cancelled || mutationEpoch.current !== hydrationEpoch) return;
+      const receivedGenerations = new Set([
+        closetResult.status === "fulfilled" ? closetResult.value.generation : undefined,
+        profileResult.status === "fulfilled" ? profileResult.value.generation : undefined,
+      ].filter((value): value is string => Boolean(value)));
+      if (receivedGenerations.size > 1) {
+        window.location.reload();
+        return;
+      }
+      const serverGeneration = closetResult.status === "fulfilled"
+        ? closetResult.value.generation
+        : profileResult.status === "fulfilled"
+          ? profileResult.value.generation
+          : undefined;
+      if (serverGeneration && serverGeneration !== cloudGeneration.current) {
+        const nextClearSignal = createClearSignal();
+        const marker = serializeClearMarker(nextClearSignal);
+        local = null;
+        storedCloudItemIds = new Set();
+        deletedWardrobeClientIds.current.clear();
+        cloudGeneration.current = serverGeneration;
+        observedClearSignal.current = nextClearSignal;
+        lastAppliedClearSignal.current = nextClearSignal;
+        try {
+          for (const targetStorageKey of new Set([storageKey, LOCAL_SNAPSHOT_KEY])) {
+            persistClearMarker(targetStorageKey, marker);
+            clearChannel.current?.postMessage({
+              type: "personal-data-cleared",
+              scope: coordinationScope(targetStorageKey),
+              marker,
+            });
+            removeLocalSnapshot(targetStorageKey);
+            persistClearMarker(targetStorageKey, marker);
+          }
+        } catch {
+          // The server generation still prevents stale cloud writes if storage is blocked.
+        }
+      } else if (serverGeneration) {
+        cloudGeneration.current = serverGeneration;
+      }
+      const cloudWardrobeItems = closetResult.status === "fulfilled"
+        ? (closetResult.value.items ?? []).filter(
+            (item) => !item.clientId || !deletedWardrobeClientIds.current.has(item.clientId),
+          )
+        : [];
+      if (closetResult.status === "fulfilled" && local && storageOwner) {
+        const cloudById = new Map(
+          cloudWardrobeItems.map((item) => [item.id, item]),
+        );
+        let reconciledWardrobe = local.wardrobe;
+        let reconciledOutfit = local.outfit ?? {};
+        for (const deletedClientId of deletedWardrobeClientIds.current) {
+          const expectedCloudId = await wardrobeCloudId(storageOwner, deletedClientId);
+          const removed = removeWardrobeIdentity(
+            reconciledWardrobe,
+            reconciledOutfit,
+            deletedClientId,
+            expectedCloudId ? [expectedCloudId] : [],
+          );
+          reconciledWardrobe = removed.wardrobe;
+          reconciledOutfit = removed.outfit;
+        }
+        for (const item of reconciledWardrobe) {
+          if (item.source !== "我的衣服" || storedCloudItemIds.has(item.id)) continue;
+          const clientId = item.clientId ?? item.id;
+          const expectedCloudId = await wardrobeCloudId(storageOwner, clientId);
+          const cloudItem = expectedCloudId ? cloudById.get(expectedCloudId) : undefined;
+          if (!cloudItem) continue;
+          const reconciled = replaceSyncedWardrobeItem(
+            reconciledWardrobe,
+            reconciledOutfit,
+            item.id,
+            cloudItem,
+          );
+          reconciledWardrobe = reconciled.wardrobe;
+          reconciledOutfit = reconciled.outfit;
+          storedCloudItemIds.add(cloudItem.id);
+        }
+        local = { ...local, wardrobe: reconciledWardrobe, outfit: reconciledOutfit };
+      }
+      if (cancelled || mutationEpoch.current !== hydrationEpoch) return;
+      const hydratedLocal = local;
       if (closetResult.status === "fulfilled") {
-        cloudItemIds.current = new Set((closetResult.value.items ?? []).map((item) => item.id));
+        wardrobeCloudReady.current = true;
+        cloudItemIds.current = new Set(cloudWardrobeItems.map((item) => item.id));
         setWardrobe((current) =>
           mergeWardrobe(
-            closetResult.value.items ?? [],
-            local
-              ? local.wardrobe.filter((item) => !storedCloudItemIds.has(item.id))
-              : current,
+            cloudWardrobeItems,
+            hydratedLocal
+              ? hydratedLocal.wardrobe.filter(
+                  (item) =>
+                    !storedCloudItemIds.has(item.id) &&
+                    !deletedWardrobeClientIds.current.has(item.clientId ?? item.id),
+                )
+              : observedClearSignal.current
+                ? []
+                : current,
           ),
         );
-      } else if (local) {
-        setWardrobe(local.wardrobe);
+      } else if (hydratedLocal) {
+        setWardrobe(hydratedLocal.wardrobe);
       }
       if (profileResult.status === "fulfilled" && profileResult.value.profile) {
+        profileCloudReady.current = true;
         const profile = profileResult.value.profile;
         setMetrics((current) => ({ ...current, ...profile }));
-      } else if (local?.metrics) {
-        setMetrics((current) => ({ ...current, ...local.metrics }));
+      } else if (profileResult.status === "fulfilled") {
+        profileCloudReady.current = true;
+      } else if (hydratedLocal?.metrics) {
+        setMetrics((current) => ({ ...current, ...hydratedLocal.metrics }));
       }
-      if (local?.outfit) setOutfit(local.outfit);
-      if (typeof local?.mood === "number") setMood(local.mood);
-      if (local?.dailyPreferences) setDailyPreferences(local.dailyPreferences);
-      if (local?.cartProductIds) {
+      if (hydratedLocal?.outfit) setOutfit(hydratedLocal.outfit);
+      if (typeof hydratedLocal?.mood === "number") setMood(hydratedLocal.mood);
+      if (hydratedLocal?.dailyPreferences) setDailyPreferences(hydratedLocal.dailyPreferences);
+      if (hydratedLocal?.cartProductIds) {
         setCart((current) => {
-          const next = productsForIds([...local.cartProductIds!, ...current.map((item) => item.id)]);
+          const next = productsForIds([...hydratedLocal.cartProductIds!, ...current.map((item) => item.id)]);
           cartProductIds.current = new Set(next.map((item) => item.id));
           return next;
         });
       }
-      if (local?.savedProductIds) {
-        setSavedProductIds((current) => [...new Set([...local.savedProductIds!, ...current])]);
+      if (hydratedLocal?.savedProductIds) {
+        setSavedProductIds((current) => [...new Set([...hydratedLocal.savedProductIds!, ...current])]);
       }
       const successCount = Number(closetResult.status === "fulfilled") + Number(profileResult.status === "fulfilled");
       const syncedWardrobeIds = closetResult.status === "fulfilled"
-        ? new Set((closetResult.value.items ?? []).map((item) => item.id))
+        ? new Set(cloudWardrobeItems.map((item) => item.id))
         : storedCloudItemIds;
       const hasPendingWardrobe = Boolean(
-        local?.wardrobe.some(
-          (item) => item.source === "我的衣服" && !syncedWardrobeIds.has(item.id),
+        hydratedLocal?.wardrobe.some(
+          (item) =>
+            item.source === "我的衣服" &&
+            !deletedWardrobeClientIds.current.has(item.clientId ?? item.id) &&
+            !syncedWardrobeIds.has(item.id),
         ),
       );
+      const hasQueuedDeletion = deletedWardrobeClientIds.current.size > 0;
       setDataMode(
-        successCount === 2 && !hasPendingWardrobe
+        successCount === 2 && !hasPendingWardrobe && !hasQueuedDeletion
           ? "云端已同步"
           : successCount >= 1
             ? "部分已同步"
@@ -682,12 +1119,192 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       window.clearTimeout(requestTimeout);
       abortController.abort();
     };
-  }, [storageKey]);
+  }, [clearMarkerKey, storageKey, storageOwner]);
+
+  useEffect(() => {
+    const retryPendingWardrobe = () => setWardrobeSyncAttempt((current) => current + 1);
+    window.addEventListener("online", retryPendingWardrobe);
+    return () => window.removeEventListener("online", retryPendingWardrobe);
+  }, []);
+
+  useEffect(() => {
+    if (
+      !ready ||
+      clearingData ||
+      !storageOwner ||
+      usesDeviceOnlyStorage() ||
+      !wardrobeCloudReady.current ||
+      !navigator.onLine
+    ) return;
+    const queuedDeletion = [...deletedWardrobeClientIds.current].find(
+      (clientId) => !pendingWardrobeDeletionIds.current.has(clientId),
+    );
+    if (queuedDeletion) {
+      const requestEpoch = mutationEpoch.current;
+      pendingWardrobeDeletionIds.current.add(queuedDeletion);
+      void (async () => {
+        try {
+          const response = await fetchCloudMutation(
+            `/api/wardrobe?clientId=${encodeURIComponent(queuedDeletion)}`,
+            { method: "DELETE" },
+          );
+          if (mutationEpoch.current !== requestEpoch) return;
+          if (!response.ok) {
+            if (!adoptStaleCloudGeneration(response)) {
+              setDataMode("部分已同步");
+              window.setTimeout(
+                () => setWardrobeSyncAttempt((current) => current + 1),
+                5_000,
+              );
+            }
+            return;
+          }
+          const cloudId = await wardrobeCloudId(storageOwner, queuedDeletion);
+          deletedWardrobeClientIds.current.delete(queuedDeletion);
+          if (cloudId) cloudItemIds.current.delete(cloudId);
+          const removed = removeWardrobeIdentity(
+            latestSnapshot.current.wardrobe,
+            latestSnapshot.current.outfit ?? {},
+            queuedDeletion,
+            cloudId ? [cloudId] : [],
+          );
+          flushSync(() => {
+            setWardrobe(removed.wardrobe);
+            setOutfit(removed.outfit);
+          });
+          const stillPending =
+            deletedWardrobeClientIds.current.size > 0 ||
+            hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
+          setDataMode(
+            stillPending || !profileCloudReady.current
+              ? "部分已同步"
+              : "云端已同步",
+          );
+          writeCurrentLocalSnapshot();
+          setWardrobeSyncAttempt((current) => current + 1);
+        } catch {
+          if (mutationEpoch.current === requestEpoch) {
+            setDataMode("部分已同步");
+            window.setTimeout(
+              () => setWardrobeSyncAttempt((current) => current + 1),
+              5_000,
+            );
+          }
+        } finally {
+          pendingWardrobeDeletionIds.current.delete(queuedDeletion);
+        }
+      })();
+      return;
+    }
+    const pendingItem = wardrobe.find(
+      (item) =>
+        item.source === "我的衣服" &&
+        !cloudItemIds.current.has(item.id) &&
+        !pendingWardrobeSyncIds.current.has(item.id),
+    );
+    if (!pendingItem) return;
+
+    const requestEpoch = mutationEpoch.current;
+    pendingWardrobeSyncIds.current.add(pendingItem.id);
+    void (async () => {
+      try {
+        const photo = await devicePhotoFile(pendingItem);
+        if (pendingItem.imageUrl?.startsWith("data:") && !photo) return;
+        if (mutationEpoch.current !== requestEpoch) return;
+        const response = await fetchCloudMutation(
+          "/api/wardrobe",
+          { method: "POST", body: wardrobeItemForm(pendingItem, photo) },
+          CLOUD_UPLOAD_TIMEOUT_MS,
+        );
+        if (mutationEpoch.current !== requestEpoch) return;
+        if (!response.ok) {
+          if (response.status === 410) {
+            const clientId = pendingItem.clientId ?? pendingItem.id;
+            const cloudId = await wardrobeCloudId(storageOwner, clientId);
+            const removed = removeWardrobeIdentity(
+              latestSnapshot.current.wardrobe,
+              latestSnapshot.current.outfit ?? {},
+              clientId,
+              cloudId ? [cloudId] : [],
+            );
+            deletedWardrobeClientIds.current.delete(clientId);
+            if (cloudId) cloudItemIds.current.delete(cloudId);
+            flushSync(() => {
+              setWardrobe(removed.wardrobe);
+              setOutfit(removed.outfit);
+            });
+            const stillPending =
+              deletedWardrobeClientIds.current.size > 0 ||
+              hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
+            setDataMode(
+              stillPending || !profileCloudReady.current
+                ? "部分已同步"
+                : "云端已同步",
+            );
+            writeCurrentLocalSnapshot();
+            setToast("这件衣物已在其他标签页移除");
+            return;
+          }
+          if (!adoptStaleCloudGeneration(response)) {
+            setDataMode("部分已同步");
+            window.setTimeout(
+              () => setWardrobeSyncAttempt((current) => current + 1),
+              5_000,
+            );
+          }
+          return;
+        }
+        const data = (await response.json()) as { item: WardrobeItem };
+        if (mutationEpoch.current !== requestEpoch) return;
+        const currentSnapshot = latestSnapshot.current;
+        const reconciled = replaceSyncedWardrobeItem(
+          currentSnapshot.wardrobe,
+          currentSnapshot.outfit ?? {},
+          pendingItem.id,
+          data.item,
+        );
+        if (!reconciled.applied) {
+          const cleanupClientId = data.item.clientId ?? pendingItem.clientId ?? pendingItem.id;
+          await fetchCloudMutation(
+            `/api/wardrobe?clientId=${encodeURIComponent(cleanupClientId)}`,
+            { method: "DELETE" },
+          );
+          return;
+        }
+        cloudItemIds.current.add(data.item.id);
+        flushSync(() => {
+          setWardrobe(reconciled.wardrobe);
+          setOutfit(reconciled.outfit);
+        });
+        const stillPending =
+          deletedWardrobeClientIds.current.size > 0 ||
+          hasPendingWardrobeItems(reconciled.wardrobe, cloudItemIds.current);
+        setDataMode(
+          stillPending || !profileCloudReady.current
+            ? "部分已同步"
+            : "云端已同步",
+        );
+        writeCurrentLocalSnapshot();
+        setToast(stillPending ? "一件本机衣物已补同步到云端" : "本机衣物已全部补同步到云端");
+      } catch {
+        if (mutationEpoch.current === requestEpoch) {
+          setDataMode("部分已同步");
+          window.setTimeout(
+            () => setWardrobeSyncAttempt((current) => current + 1),
+            5_000,
+          );
+        }
+      } finally {
+        pendingWardrobeSyncIds.current.delete(pendingItem.id);
+      }
+    })();
+  }, [adoptStaleCloudGeneration, clearingData, ready, storageOwner, wardrobe, wardrobeSyncAttempt, writeCurrentLocalSnapshot]);
 
   useEffect(() => {
     if (!hydrated.current || dataMode === "连接中") return;
     const timer = window.setTimeout(() => {
-      const result = writeLocalSnapshot(storageKey, latestSnapshot.current);
+      const result = writeCurrentLocalSnapshot();
+      if (result === "superseded") return;
       if (result === "failed") {
         if (dataMode === "云端已同步" || dataMode === "部分已同步") {
           setDataMode("部分已同步");
@@ -708,11 +1325,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [wardrobe, metrics, outfit, mood, cart, savedProductIds, dailyPreferences, dataMode, storageKey]);
+  }, [wardrobe, metrics, outfit, mood, cart, savedProductIds, dailyPreferences, dataMode, storageKey, writeCurrentLocalSnapshot]);
 
   useEffect(() => {
     const flushDeviceState = () => {
-      if (hydrated.current) writeLocalSnapshot(storageKey, latestSnapshot.current);
+      if (hydrated.current) writeCurrentLocalSnapshot();
     };
     const handleVisibility = () => {
       if (document.hidden) flushDeviceState();
@@ -723,7 +1340,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       window.removeEventListener("pagehide", flushDeviceState);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [storageKey]);
+  }, [storageKey, writeCurrentLocalSnapshot]);
 
   useEffect(() => {
     if (!toast) return;
@@ -836,42 +1453,84 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     if (!window.confirm(`确定从衣橱移除“${item.name}”吗？这不会影响真实购买记录。`)) return;
     const requestEpoch = mutationEpoch.current;
     let deletedFromCloud = false;
-    const shouldDeleteFromCloud =
-      !usesDeviceOnlyStorage() && cloudItemIds.current.has(item.id);
+    let queuedCloudDeletion = false;
+    const clientId = item.clientId && isClientWardrobeId(item.clientId)
+      ? item.clientId
+      : item.source === "我的衣服" && isClientWardrobeId(item.id)
+        ? item.id
+        : undefined;
+    const expectedCloudId = clientId && storageOwner
+      ? await wardrobeCloudId(storageOwner, clientId)
+      : null;
+    const shouldDeleteFromCloud = !usesDeviceOnlyStorage() && (
+      Boolean(clientId) || cloudItemIds.current.has(item.id)
+    );
     if (shouldDeleteFromCloud) {
       try {
+        const query = clientId
+          ? `clientId=${encodeURIComponent(clientId)}`
+          : `id=${encodeURIComponent(item.id)}`;
         const response = await fetchCloudMutation(
-          `/api/wardrobe?id=${encodeURIComponent(item.id)}`,
+          `/api/wardrobe?${query}`,
           { method: "DELETE" },
         );
         if (mutationEpoch.current !== requestEpoch) return;
-        if (!response.ok) throw new Error("Delete failed");
+        if (!response.ok) {
+          if (adoptStaleCloudGeneration(response)) return;
+          throw new Error("Delete failed");
+        }
         deletedFromCloud = true;
+        if (clientId) deletedWardrobeClientIds.current.delete(clientId);
         cloudItemIds.current.delete(item.id);
+        if (expectedCloudId) cloudItemIds.current.delete(expectedCloudId);
       } catch {
         if (mutationEpoch.current !== requestEpoch) return;
-        setToast("云端删除没有成功，这件衣服仍保留在衣橱中");
-        return;
+        if (!clientId) {
+          setToast("云端删除没有成功，这件衣服仍保留在衣橱中");
+          return;
+        }
+        deletedWardrobeClientIds.current.add(clientId);
+        queuedCloudDeletion = true;
       }
     }
+    const removedIds = [item.id, expectedCloudId].filter((id): id is string => Boolean(id));
+    const removed = clientId
+      ? removeWardrobeIdentity(
+          latestSnapshot.current.wardrobe,
+          latestSnapshot.current.outfit ?? {},
+          clientId,
+          removedIds,
+        )
+      : {
+          wardrobe: latestSnapshot.current.wardrobe.filter((entry) => entry.id !== item.id),
+          outfit: {
+            topId: latestSnapshot.current.outfit?.topId === item.id ? undefined : latestSnapshot.current.outfit?.topId,
+            bottomId: latestSnapshot.current.outfit?.bottomId === item.id ? undefined : latestSnapshot.current.outfit?.bottomId,
+            dressId: latestSnapshot.current.outfit?.dressId === item.id ? undefined : latestSnapshot.current.outfit?.dressId,
+            outerwearId: latestSnapshot.current.outfit?.outerwearId === item.id ? undefined : latestSnapshot.current.outfit?.outerwearId,
+          },
+        };
     flushSync(() => {
-      setWardrobe((current) => current.filter((entry) => entry.id !== item.id));
-      setOutfit((current) => ({
-        topId: current.topId === item.id ? undefined : current.topId,
-        bottomId: current.bottomId === item.id ? undefined : current.bottomId,
-        dressId: current.dressId === item.id ? undefined : current.dressId,
-        outerwearId: current.outerwearId === item.id ? undefined : current.outerwearId,
-      }));
+      setWardrobe(removed.wardrobe);
+      setOutfit(removed.outfit);
     });
     if (deletedFromCloud) {
-      const hasPendingWardrobe = latestSnapshot.current.wardrobe.some(
-        (entry) => entry.source === "我的衣服" && !cloudItemIds.current.has(entry.id),
+      const hasPendingWardrobe =
+        deletedWardrobeClientIds.current.size > 0 ||
+        hasPendingWardrobeItems(removed.wardrobe, cloudItemIds.current);
+      setDataMode(
+        hasPendingWardrobe || !profileCloudReady.current
+          ? "部分已同步"
+          : "云端已同步",
       );
-      setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
     }
     else markLocalChange();
-    writeLocalSnapshot(storageKey, latestSnapshot.current);
-    setToast(`${item.name} 已从衣橱移除`);
+    writeCurrentLocalSnapshot();
+    setToast(
+      queuedCloudDeletion
+        ? `${item.name} 已从本机移除；联网后会继续清理云端副本`
+        : `${item.name} 已从衣橱移除`,
+    );
   }
 
   function checkout() {
@@ -910,14 +1569,19 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         },
       );
       if (mutationEpoch.current !== requestEpoch) return;
-      if (!response.ok) throw new Error();
-      const hasPendingWardrobe = latestSnapshot.current.wardrobe.some(
-        (item) => item.source === "我的衣服" && !cloudItemIds.current.has(item.id),
-      );
+      if (!response.ok) {
+        if (adoptStaleCloudGeneration(response)) return;
+        throw new Error();
+      }
+      profileCloudReady.current = true;
+      const hasPendingWardrobe =
+        deletedWardrobeClientIds.current.size > 0 ||
+        hasPendingWardrobeItems(latestSnapshot.current.wardrobe, cloudItemIds.current);
       setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
-      setToast(hasPendingWardrobe ? "分身参数已保存；仍有衣物只保存在本机" : "分身参数已安心保存");
+      setToast(hasPendingWardrobe ? "分身参数已保存；仍有衣橱变更等待同步" : "分身参数已安心保存");
     } catch {
       if (mutationEpoch.current !== requestEpoch) return;
+      profileCloudReady.current = false;
       setDataMode("部分已同步");
       setToast("分身参数已保存在这台设备");
     }
@@ -946,30 +1610,42 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       photoSaved = await addToDevice();
     } else {
       try {
-        const form = new FormData();
-        Object.entries(item).forEach(([key, value]) => {
-          if (value !== undefined) form.append(key, String(value));
-        });
-        if (photo) form.append("photo", photo);
         const response = await fetchCloudMutation(
           "/api/wardrobe",
-          { method: "POST", body: form },
+          { method: "POST", body: wardrobeItemForm(item, photo) },
           CLOUD_UPLOAD_TIMEOUT_MS,
         );
         if (mutationEpoch.current !== requestEpoch) return;
+        if (response.status === 409 && adoptStaleCloudGeneration(response)) return;
         if (response.status === 409) {
           setToast(`云端衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件`);
           return;
         }
-        if (!response.ok) throw new Error();
+        if (response.status === 410) {
+          setToast("这份衣物草稿已在其他标签页删除，请重新添加");
+          return;
+        }
+        if (!response.ok) {
+          if (adoptStaleCloudGeneration(response)) return;
+          throw new Error();
+        }
         const data = (await response.json()) as { item: WardrobeItem };
         if (mutationEpoch.current !== requestEpoch) return;
         cloudItemIds.current.add(data.item.id);
-        setWardrobe((current) => [data.item, ...current]);
-        const hasPendingWardrobe = wardrobe.some(
-          (entry) => entry.source === "我的衣服" && !cloudItemIds.current.has(entry.id),
+        setWardrobe((current) => [
+          data.item,
+          ...current.filter(
+            (entry) => entry.id !== data.item.id && entry.id !== data.item.clientId,
+          ),
+        ]);
+        const hasPendingWardrobe =
+          deletedWardrobeClientIds.current.size > 0 ||
+          hasPendingWardrobeItems(wardrobe, cloudItemIds.current);
+        setDataMode(
+          hasPendingWardrobe || !profileCloudReady.current
+            ? "部分已同步"
+            : "云端已同步",
         );
-        setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
       } catch {
         if (mutationEpoch.current !== requestEpoch) return;
         photoSaved = await addToDevice();
@@ -992,19 +1668,44 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     if (!confirmed) return;
 
     const deviceOnly = usesDeviceOnlyStorage();
-    const emptySnapshot: Omit<LocalSnapshot, "version" | "updatedAt"> = {
-      wardrobe: [],
-      metrics: DEFAULT_METRICS,
-      outfit: {},
-      mood: 62,
-      cartProductIds: [],
-      savedProductIds: [],
-      cloudItemIds: [],
-      dailyPreferences: DEFAULT_DAILY_PREFERENCES,
+    const expectedCloudGeneration = cloudGeneration.current;
+    const emptySnapshot = emptyPersonalSnapshot();
+    const nextClearSignal = createClearSignal();
+    const marker = serializeClearMarker(nextClearSignal);
+    const publishClear = (targetStorageKey: string) => {
+      const markerSaved = persistClearMarker(targetStorageKey, marker);
+      clearChannel.current?.postMessage({
+        type: "personal-data-cleared",
+        scope: coordinationScope(targetStorageKey),
+        marker,
+      });
+      return markerSaved;
     };
+    const publishClearResult = (success: boolean) => {
+      for (const targetStorageKey of new Set([storageKey, LOCAL_SNAPSHOT_KEY])) {
+        clearChannel.current?.postMessage({
+          type: "personal-data-clear-finished",
+          scope: coordinationScope(targetStorageKey),
+          marker,
+          success,
+          cloudGeneration: cloudGeneration.current,
+        });
+      }
+    };
+    let currentMarkerSaved = publishClear(storageKey);
+    let legacyMarkerSaved = storageKey === LOCAL_SNAPSHOT_KEY
+      ? currentMarkerSaved
+      : publishClear(LOCAL_SNAPSHOT_KEY);
+    observedClearSignal.current = nextClearSignal;
+    lastAppliedClearSignal.current = nextClearSignal;
 
     mutationEpoch.current += 1;
     const pendingMutations = [...pendingCloudMutations.current];
+    pendingWardrobeSyncIds.current.clear();
+    pendingWardrobeDeletionIds.current.clear();
+    deletedWardrobeClientIds.current.clear();
+    wardrobeCloudReady.current = false;
+    profileCloudReady.current = false;
     cloudItemIds.current.clear();
     cartProductIds.current.clear();
     latestSnapshot.current = emptySnapshot;
@@ -1012,6 +1713,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     const legacyRemoved = storageKey === LOCAL_SNAPSHOT_KEY
       ? currentRemoved
       : removeLocalSnapshot(LOCAL_SNAPSHOT_KEY);
+    currentMarkerSaved = persistClearMarker(storageKey, marker) || currentMarkerSaved;
+    if (storageKey !== LOCAL_SNAPSHOT_KEY) {
+      legacyMarkerSaved = persistClearMarker(LOCAL_SNAPSHOT_KEY, marker) || legacyMarkerSaved;
+    }
     flushSync(() => {
       setCartOpen(false);
       setAddOpen(false);
@@ -1026,17 +1731,19 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       setClearingData(true);
     });
 
-    const saveResult = writeLocalSnapshot(storageKey, emptySnapshot);
+    const saveResult = writeLocalSnapshot(storageKey, emptySnapshot, nextClearSignal);
     const legacySaveResult = storageKey !== LOCAL_SNAPSHOT_KEY && !legacyRemoved
-      ? writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, emptySnapshot)
+      ? writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, emptySnapshot, nextClearSignal)
       : null;
     const currentCleared =
-      currentRemoved || saveResult !== "failed" || isClearedLocalSnapshot(storageKey);
+      currentMarkerSaved &&
+      (currentRemoved || saveResult !== "failed" || isClearedLocalSnapshot(storageKey));
     const legacyCleared = storageKey === LOCAL_SNAPSHOT_KEY
       ? currentCleared
-      : legacyRemoved ||
-        (legacySaveResult !== null && legacySaveResult !== "failed") ||
-        isClearedLocalSnapshot(LOCAL_SNAPSHOT_KEY);
+      : legacyMarkerSaved &&
+        (legacyRemoved ||
+          (legacySaveResult !== null && legacySaveResult !== "failed") ||
+          isClearedLocalSnapshot(LOCAL_SNAPSHOT_KEY));
     const localCleared = currentCleared && legacyCleared;
 
     try {
@@ -1046,17 +1753,67 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           pendingMutations.map((mutation) => mutation.promise),
         );
 
-        const deletionResults = await Promise.allSettled([
-          fetchCloudMutation("/api/wardrobe?scope=all", { method: "DELETE" }),
-          fetchCloudMutation("/api/profile", { method: "DELETE" }),
-        ]);
-        const cloudCleared = deletionResults.every(
-          (result) => result.status === "fulfilled" && result.value.ok,
+        let deletionResponse: Response | null = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            deletionResponse = await fetchCloudMutation(
+              "/api/personal-data",
+              {
+                method: "DELETE",
+                headers: {
+                  [DATA_GENERATION_HEADER]: expectedCloudGeneration,
+                  [CLEAR_REQUEST_HEADER]: nextClearSignal,
+                },
+              },
+            );
+          } catch {
+            if (attempt < 2 && navigator.onLine) continue;
+            throw new Error("cloud deletion unavailable");
+          }
+          if (deletionResponse.ok) break;
+          if (deletionResponse.status === 503 && attempt < 2) continue;
+          break;
+        }
+        if (!deletionResponse) throw new Error("cloud deletion unavailable");
+        const authoritativeGeneration = deletionResponse.headers
+          .get(DATA_GENERATION_HEADER)?.trim() ?? null;
+        const clearAction = clearMutationAction(
+          deletionResponse.status,
+          expectedCloudGeneration,
+          authoritativeGeneration,
         );
-        if (!cloudCleared) {
+        if (clearAction === "stale" && authoritativeGeneration) {
+          cloudGeneration.current = authoritativeGeneration;
+          const refreshedSnapshot = { ...emptySnapshot, cloudGeneration: authoritativeGeneration };
+          latestSnapshot.current = refreshedSnapshot;
+          writeLocalSnapshot(storageKey, refreshedSnapshot, nextClearSignal);
+          if (storageKey !== LOCAL_SNAPSHOT_KEY) {
+            writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, refreshedSnapshot, nextClearSignal);
+          }
+          publishClearResult(false);
+          window.location.reload();
+          return;
+        }
+        if (!deletionResponse.ok) {
           throw new Error("cloud deletion failed");
         }
+        const confirmedGeneration = deletionResponse.headers.get(DATA_GENERATION_HEADER)?.trim();
+        if (!confirmedGeneration) throw new Error("cloud generation missing");
+        cloudGeneration.current = confirmedGeneration;
+        wardrobeCloudReady.current = true;
+        profileCloudReady.current = true;
+        const completedSnapshot = {
+          ...emptySnapshot,
+          cloudGeneration: confirmedGeneration,
+        };
+        latestSnapshot.current = completedSnapshot;
+        writeLocalSnapshot(storageKey, completedSnapshot, nextClearSignal);
+        if (storageKey !== LOCAL_SNAPSHOT_KEY) {
+          writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, completedSnapshot, nextClearSignal);
+        }
       }
+
+      publishClearResult(true);
 
       setDataMode(
         deviceOnly
@@ -1075,6 +1832,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             : "云端资料已清除；浏览器阻止清除本机副本，请在网站数据设置中删除",
       );
     } catch {
+      publishClearResult(false);
       setDataMode(deviceOnly ? (localCleared ? "本机已保存" : "仅本次有效") : "部分已同步");
       setToast(
         localCleared

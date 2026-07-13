@@ -1,9 +1,14 @@
 import { getRawDb } from "../../../db";
+import {
+  currentDataGeneration,
+  dataGenerationHeaders,
+  ensureDataGenerationTable,
+  requestDataGeneration,
+  staleDataGenerationResponse,
+} from "../../lib/data-generation";
 import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
 
-const PRIVATE_JSON_HEADERS = { "cache-control": "private, no-store" };
-
-async function ensureProfileTable(db: D1Database) {
+export async function ensureProfileTable(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS body_profiles (
     owner_email TEXT PRIMARY KEY NOT NULL,
     height INTEGER NOT NULL,
@@ -26,11 +31,12 @@ export async function GET(request: Request) {
     if (!owner) return unauthorizedJson();
     const db = await getRawDb();
     await ensureProfileTable(db);
+    const generation = await currentDataGeneration(db, owner);
     const row = await db
       .prepare("SELECT * FROM body_profiles WHERE owner_email = ?")
       .bind(owner)
       .first<Record<string, unknown>>();
-    if (!row) return Response.json({ profile: null }, { headers: PRIVATE_JSON_HEADERS });
+    if (!row) return Response.json({ profile: null, generation }, { headers: dataGenerationHeaders(generation) });
     return Response.json(
       {
         profile: {
@@ -45,8 +51,9 @@ export async function GET(request: Request) {
           skinTone: row.skin_tone,
           bodyShape: row.body_shape,
         },
+        generation,
       },
-      { headers: PRIVATE_JSON_HEADERS },
+      { headers: dataGenerationHeaders(generation) },
     );
   } catch {
     return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
@@ -88,9 +95,19 @@ export async function PUT(request: Request) {
 
     const db = await getRawDb();
     await ensureProfileTable(db);
-    await db.prepare(`INSERT INTO body_profiles (
+    await ensureDataGenerationTable(db);
+    const requestedGeneration = requestDataGeneration(request);
+    const activeGeneration = await currentDataGeneration(db, owner);
+    if (!requestedGeneration || requestedGeneration !== activeGeneration) {
+      return staleDataGenerationResponse(activeGeneration);
+    }
+    const result = await db.prepare(`INSERT INTO body_profiles (
       owner_email, height, weight, shoulder, chest, waist, hips, torso, legs, skin_tone, body_shape, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+    WHERE COALESCE(
+      (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+      'initial'
+    ) = ?
     ON CONFLICT(owner_email) DO UPDATE SET
       height = excluded.height, weight = excluded.weight, shoulder = excluded.shoulder,
       chest = excluded.chest, waist = excluded.waist, hips = excluded.hips,
@@ -99,9 +116,16 @@ export async function PUT(request: Request) {
       .bind(
         owner, values.height, values.weight, values.shoulder, values.chest,
         values.waist, values.hips, values.torso, values.legs, skinTone, bodyShape,
+        owner, requestedGeneration,
       )
       .run();
-    return Response.json({ saved: true });
+    if (result.meta.changes !== 1) {
+      return staleDataGenerationResponse(await currentDataGeneration(db, owner));
+    }
+    return Response.json(
+      { saved: true, generation: requestedGeneration },
+      { headers: dataGenerationHeaders(requestedGeneration) },
+    );
   } catch {
     return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }
@@ -113,8 +137,16 @@ export async function DELETE(request: Request) {
     if (!owner) return unauthorizedJson();
     const db = await getRawDb();
     await ensureProfileTable(db);
-    await db.prepare("DELETE FROM body_profiles WHERE owner_email = ?").bind(owner).run();
-    return new Response(null, { status: 204 });
+    const requestedGeneration = requestDataGeneration(request);
+    const activeGeneration = await currentDataGeneration(db, owner);
+    if (!requestedGeneration || requestedGeneration !== activeGeneration) {
+      return staleDataGenerationResponse(activeGeneration);
+    }
+    await db.prepare(`DELETE FROM body_profiles WHERE owner_email = ? AND COALESCE(
+      (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+      'initial'
+    ) = ?`).bind(owner, owner, requestedGeneration).run();
+    return new Response(null, { status: 204, headers: dataGenerationHeaders(activeGeneration) });
   } catch {
     return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }

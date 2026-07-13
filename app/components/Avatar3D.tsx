@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { replaceRuntimeAvatar } from "../lib/avatar-runtime.mjs";
 
 export type BodyMetrics = {
   height: number;
@@ -647,14 +648,9 @@ export function Avatar3D({
     let nextAvatar: THREE.Group | null = null;
     try {
       nextAvatar = buildAvatar(sceneInput.metrics, sceneInput.outfit);
-      runtime.scene.add(nextAvatar);
-      const previousAvatar = runtime.avatar;
-      runtime.avatar = nextAvatar;
+      replaceRuntimeAvatar(runtime, nextAvatar, disposeObject3D);
       runtime.metrics = sceneInput.metrics;
       runtime.outfit = sceneInput.outfit;
-      runtime.scene.remove(previousAvatar);
-      disposeObject3D(previousAvatar);
-      runtime.renderer.shadowMap.needsUpdate = true;
       runtime.renderFrame();
     } catch {
       if (nextAvatar && nextAvatar !== runtime.avatar) disposeObject3D(nextAvatar);

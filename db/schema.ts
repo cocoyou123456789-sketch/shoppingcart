@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const wardrobeItems = sqliteTable(
   "wardrobe_items",
@@ -50,4 +50,50 @@ export const wardrobeImageCleanup = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [index("wardrobe_cleanup_owner_idx").on(table.ownerEmail)],
+);
+
+export const ownerDataGenerations = sqliteTable("owner_data_generations", {
+  ownerEmail: text("owner_email").primaryKey(),
+  generation: text("generation").notNull(),
+  clearedAt: text("cleared_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const personalDataClearOperations = sqliteTable(
+  "personal_data_clear_operations",
+  {
+    ownerEmail: text("owner_email").notNull(),
+    requestId: text("request_id").notNull(),
+    expectedGeneration: text("expected_generation").notNull(),
+    nextGeneration: text("next_generation").notNull(),
+    status: text("status").notNull().default("pending"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    completedAt: text("completed_at"),
+  },
+  (table) => [primaryKey({ columns: [table.ownerEmail, table.requestId] })],
+);
+
+export const personalDataClearImages = sqliteTable(
+  "personal_data_clear_images",
+  {
+    ownerEmail: text("owner_email").notNull(),
+    requestId: text("request_id").notNull(),
+    imageKey: text("image_key").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.ownerEmail, table.requestId, table.imageKey] })],
+);
+
+export const wardrobeSyncKeys = sqliteTable(
+  "wardrobe_sync_keys",
+  {
+    ownerEmail: text("owner_email").notNull(),
+    clientId: text("client_id").notNull(),
+    itemId: text("item_id").notNull(),
+    state: text("state").notNull().default("active"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerEmail, table.clientId] }),
+    uniqueIndex("wardrobe_sync_item_idx").on(table.ownerEmail, table.itemId),
+  ],
 );
