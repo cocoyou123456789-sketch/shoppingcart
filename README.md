@@ -27,6 +27,9 @@ npm run dev
 ```bash
 npm run lint
 npm test
+npm run build:pages
 ```
 
 数据库结构位于 `db/schema.ts`，生成的迁移位于 `drizzle/`。部署配置位于 `.openai/hosting.json`。
+
+GitHub Pages 版本是纯静态站点，衣橱和分身资料会保存在访问设备的浏览器中，不会跨设备同步。

@@ -21,6 +21,13 @@ type OutfitSelection = {
   outerwearId?: string;
 };
 
+const LOCAL_SNAPSHOT_KEY = "songsong-closet:device-state:v1";
+
+type LocalSnapshot = {
+  wardrobe: WardrobeItem[];
+  metrics: BodyMetrics;
+};
+
 const NAV_ITEMS: { id: View; label: string; short: string; icon: string }[] = [
   { id: "home", label: "今天", short: "今天", icon: "⌂" },
   { id: "shop", label: "松松逛", short: "逛逛", icon: "⌁" },
@@ -142,6 +149,54 @@ function todayLabel() {
   }).format(new Date());
 }
 
+function readLocalSnapshot(): LocalSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SNAPSHOT_KEY);
+    return raw ? (JSON.parse(raw) as LocalSnapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSnapshot(wardrobe: WardrobeItem[], metrics: BodyMetrics) {
+  const snapshot = JSON.stringify({ wardrobe, metrics });
+  try {
+    window.localStorage.setItem(LOCAL_SNAPSHOT_KEY, snapshot);
+  } catch {
+    const withoutPhotos = wardrobe.map((item) => ({
+      ...item,
+      imageUrl: item.imageUrl?.startsWith("data:") ? undefined : item.imageUrl,
+    }));
+    try {
+      window.localStorage.setItem(
+        LOCAL_SNAPSHOT_KEY,
+        JSON.stringify({ wardrobe: withoutPhotos, metrics }),
+      );
+    } catch {
+      // Device storage may be disabled or full; the current session still works.
+    }
+  }
+}
+
+async function photoToDeviceImage(file?: File) {
+  if (!file) return undefined;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const maxEdge = 900;
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return canvas.toDataURL("image/jpeg", 0.76);
+  } catch {
+    return undefined;
+  }
+}
+
 export function MuseApp() {
   const [view, setView] = useState<View>("home");
   const [metrics, setMetrics] = useState<BodyMetrics>(DEFAULT_METRICS);
@@ -153,7 +208,7 @@ export function MuseApp() {
   const [celebrationOpen, setCelebrationOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [mood, setMood] = useState(62);
-  const [dataMode, setDataMode] = useState<"连接中" | "已保存" | "演示模式">("连接中");
+  const [dataMode, setDataMode] = useState<"连接中" | "已保存" | "本机保存">("连接中");
   const hydrated = useRef(false);
 
   useEffect(() => {
@@ -179,7 +234,10 @@ export function MuseApp() {
       })
       .catch(() => {
         if (!cancelled) {
-          setDataMode("演示模式");
+          const local = readLocalSnapshot();
+          if (local?.wardrobe?.length) setWardrobe(local.wardrobe);
+          if (local?.metrics) setMetrics((current) => ({ ...current, ...local.metrics }));
+          setDataMode("本机保存");
           hydrated.current = true;
         }
       });
@@ -187,6 +245,11 @@ export function MuseApp() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hydrated.current || dataMode !== "本机保存") return;
+    writeLocalSnapshot(wardrobe, metrics);
+  }, [wardrobe, metrics, dataMode]);
 
   useEffect(() => {
     if (!toast) return;
@@ -251,8 +314,9 @@ export function MuseApp() {
       setDataMode("已保存");
       setToast("分身参数已安心保存");
     } catch {
-      setDataMode("演示模式");
-      setToast("已保留在本次演示中");
+      setDataMode("本机保存");
+      writeLocalSnapshot(wardrobe, metrics);
+      setToast("分身参数已保存在这台设备");
     }
   }
 
@@ -269,8 +333,14 @@ export function MuseApp() {
       setWardrobe((current) => [data.item, ...current]);
       setDataMode("已保存");
     } catch {
-      setWardrobe((current) => [item, ...current]);
-      setDataMode("演示模式");
+      const deviceImage = await photoToDeviceImage(photo);
+      const localItem = { ...item, imageUrl: deviceImage ?? item.imageUrl };
+      setWardrobe((current) => {
+        const next = [localItem, ...current];
+        writeLocalSnapshot(next, metrics);
+        return next;
+      });
+      setDataMode("本机保存");
     }
     setAddOpen(false);
     setToast("这件衣服已经住进你的衣橱");
@@ -297,7 +367,7 @@ export function MuseApp() {
           ))}
         </nav>
         <div className="top-actions">
-          <span className={`sync-state sync-state--${dataMode === "已保存" ? "saved" : "demo"}`}>
+          <span className={`sync-state sync-state--${dataMode === "已保存" || dataMode === "本机保存" ? "saved" : "demo"}`}>
             <span aria-hidden="true">●</span> {dataMode}
           </span>
           <button type="button" className="bag-button" onClick={() => setCartOpen(true)} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>

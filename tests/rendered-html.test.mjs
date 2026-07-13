@@ -45,7 +45,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
 
   assert.match(page, /<MuseApp \/>/);
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
-  assert.match(layout, /\/og\.png/);
+  assert.match(layout, /\/og\.jpg/);
   assert.match(app, /VIRTUAL SHOPPING/);
   assert.match(app, /照片估算只用于视觉预览/);
   assert.match(app, /不代表衣服的实际尺寸/);
