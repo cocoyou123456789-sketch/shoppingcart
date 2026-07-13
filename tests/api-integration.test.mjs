@@ -122,6 +122,26 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     });
     assert.equal(oversizedRequest.status, 413);
 
+    let streamedBytes = 0;
+    const chunkedOversizedBody = new ReadableStream({
+      pull(controller) {
+        if (streamedBytes >= 7 * 1024 * 1024) {
+          controller.close();
+          return;
+        }
+        const chunk = new Uint8Array(1024 * 1024);
+        streamedBytes += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const chunkedOversizedRequest = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: { ...userA, "content-type": "multipart/form-data; boundary=chunked-oversized" },
+      body: chunkedOversizedBody,
+      duplex: "half",
+    });
+    assert.equal(chunkedOversizedRequest.status, 413);
+
     const invalidGarment = garmentForm();
     invalidGarment.set("name", "x".repeat(121));
     invalidGarment.set("chest", "999");

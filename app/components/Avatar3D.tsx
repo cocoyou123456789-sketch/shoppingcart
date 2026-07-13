@@ -63,12 +63,16 @@ function mesh(
   return result;
 }
 
-function useDebouncedValue<T>(value: T, delay: number) {
-  const [debounced, setDebounced] = useState(value);
+function useDebouncedAvatarInput(
+  metrics: BodyMetrics,
+  outfit: AvatarOutfit,
+  delay: number,
+) {
+  const [debounced, setDebounced] = useState(() => ({ metrics, outfit }));
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delay);
+    const timer = window.setTimeout(() => setDebounced({ metrics, outfit }), delay);
     return () => window.clearTimeout(timer);
-  }, [value, delay]);
+  }, [metrics, outfit, delay]);
   return debounced;
 }
 
@@ -93,6 +97,202 @@ function lengthScale(
   return THREE.MathUtils.clamp(garmentLength / referenceLength, min, max);
 }
 
+type SceneRuntime = {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  renderer: THREE.WebGLRenderer;
+  controls: OrbitControls;
+  avatar: THREE.Group;
+  metrics: BodyMetrics;
+  outfit: AvatarOutfit;
+  renderFrame: (timestamp?: number) => boolean;
+  resize: () => void;
+  failRendering: () => void;
+  disposed: boolean;
+};
+
+function disposeObject3D(object: THREE.Object3D) {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    geometries.add(child.geometry);
+    const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
+    childMaterials.forEach((item) => materials.add(item));
+  });
+  geometries.forEach((geometry) => geometry.dispose());
+  materials.forEach((item) => item.dispose());
+}
+
+function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit) {
+  const avatar = new THREE.Group();
+  avatar.position.y = -3.02;
+  avatar.scale.y = metrics.height / 168;
+
+  const bmi = metrics.weight / Math.pow(metrics.height / 100, 2);
+  const mass = THREE.MathUtils.clamp(0.88 + (bmi - 20) * 0.018, 0.76, 1.28);
+  const shoulderWidth = THREE.MathUtils.clamp(metrics.shoulder / 40, 0.78, 1.28);
+  const chestWidth = THREE.MathUtils.clamp(metrics.chest / 90, 0.8, 1.28);
+  const waistWidth = THREE.MathUtils.clamp(metrics.waist / 72, 0.76, 1.38);
+  const hipWidth = THREE.MathUtils.clamp(metrics.hips / 94, 0.78, 1.34);
+  const torsoScale = THREE.MathUtils.clamp(metrics.torso / 50, 0.84, 1.17);
+  const legScale = THREE.MathUtils.clamp(metrics.legs / 82, 0.86, 1.16);
+
+  const skin = material(metrics.skinTone, 0.82);
+  const hair = material("#332b2c", 0.9);
+  const eye = material("#44383b", 0.6);
+
+  avatar.add(mesh(new THREE.SphereGeometry(0.45, 40, 32), skin, [0, 5.75, 0], [0.92, 1.06, 0.9]));
+  avatar.add(mesh(new THREE.SphereGeometry(0.47, 32, 24), hair, [0, 5.88, -0.12], [1, 1.02, 0.78]));
+  avatar.add(mesh(new THREE.CylinderGeometry(0.17, 0.2, 0.42, 24), skin, [0, 5.22, 0]));
+  avatar.add(mesh(new THREE.SphereGeometry(0.035, 16, 12), eye, [-0.16, 5.82, 0.41]));
+  avatar.add(mesh(new THREE.SphereGeometry(0.035, 16, 12), eye, [0.16, 5.82, 0.41]));
+
+  avatar.add(
+    mesh(
+      new THREE.CylinderGeometry(0.66 * waistWidth, 0.82 * hipWidth, 2.05, 40),
+      skin,
+      [0, 4.08, 0],
+      [chestWidth * mass, torsoScale, 0.62 * mass],
+    ),
+    mesh(
+      new THREE.SphereGeometry(0.83, 40, 28),
+      skin,
+      [0, 3.14, 0],
+      [hipWidth * mass, 0.62, 0.68 * mass],
+    ),
+  );
+
+  const armGeo = new THREE.CapsuleGeometry(0.17 * mass, 1.65, 8, 18);
+  const leftArm = mesh(armGeo, skin, [-0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
+  leftArm.rotation.z = -0.08;
+  const rightArm = mesh(armGeo.clone(), skin, [0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
+  rightArm.rotation.z = 0.08;
+  avatar.add(leftArm, rightArm);
+
+  const legGeo = new THREE.CapsuleGeometry(0.25 * mass, 2.42, 10, 22);
+  avatar.add(
+    mesh(legGeo, skin, [-0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
+    mesh(legGeo.clone(), skin, [0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
+  );
+  const shoeMaterial = material("#4c4548", 0.68);
+  avatar.add(
+    mesh(new THREE.SphereGeometry(0.31, 24, 16), shoeMaterial, [-0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
+    mesh(new THREE.SphereGeometry(0.31, 24, 16), shoeMaterial, [0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
+  );
+
+  if (outfit.dress) {
+    const dressChestScale = measurementScale(outfit.dress.chest, metrics.chest, 6, 0.86, 1.24);
+    const dressWaistScale = measurementScale(outfit.dress.waist, metrics.waist, 5, 0.86, 1.28);
+    const dressHipScale = measurementScale(outfit.dress.hips, metrics.hips, 8, 0.86, 1.3);
+    const dressLengthScale = lengthScale(outfit.dress.length, 110, 0.72, 1.22);
+    const dressMaterial = material(outfit.dress.color, 0.78);
+    avatar.add(
+      mesh(
+        new THREE.CylinderGeometry(
+          0.76 * chestWidth * dressChestScale,
+          0.78 * waistWidth * dressWaistScale,
+          1.45,
+          40,
+        ),
+        dressMaterial,
+        [0, 4.2, 0],
+        [mass, torsoScale, 0.67 * mass],
+      ),
+      mesh(
+        new THREE.CylinderGeometry(
+          0.78 * waistWidth * dressWaistScale,
+          1.12 * hipWidth * dressHipScale,
+          2.12,
+          40,
+        ),
+        dressMaterial,
+        [0, 2.75 - (dressLengthScale - 1) * 0.72, 0],
+        [mass, dressLengthScale, 0.69 * mass],
+      ),
+    );
+  } else {
+    if (outfit.top) {
+      const topChestScale = measurementScale(outfit.top.chest, metrics.chest, 8, 0.84, 1.28);
+      const topWaistScale = measurementScale(outfit.top.waist, metrics.waist, 8, 0.84, 1.32);
+      const topLengthScale = lengthScale(outfit.top.length, 65, 0.68, 1.25);
+      avatar.add(
+        mesh(
+          new THREE.CylinderGeometry(
+            0.77 * chestWidth * topChestScale,
+            0.78 * waistWidth * topWaistScale,
+            1.64,
+            40,
+          ),
+          material(outfit.top.color, 0.76),
+          [0, 4.22 - (topLengthScale - 1) * 0.55, 0],
+          [mass, torsoScale * topLengthScale, 0.68 * mass],
+        ),
+      );
+    }
+    if (outfit.bottom) {
+      const bottomWaistScale = measurementScale(outfit.bottom.waist, metrics.waist, 4, 0.86, 1.3);
+      const bottomHipScale = measurementScale(outfit.bottom.hips, metrics.hips, 6, 0.86, 1.3);
+      const bottomLengthScale = lengthScale(outfit.bottom.length, 100, 0.58, 1.16);
+      const bottomMaterial = material(outfit.bottom.color, 0.8);
+      avatar.add(
+        mesh(
+          new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
+          bottomMaterial,
+          [-0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
+          [1.05, legScale * bottomLengthScale, 1.08],
+        ),
+        mesh(
+          new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
+          bottomMaterial,
+          [0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
+          [1.05, legScale * bottomLengthScale, 1.08],
+        ),
+        mesh(
+          new THREE.CylinderGeometry(
+            0.76 * waistWidth * bottomWaistScale,
+            0.94 * hipWidth * bottomHipScale,
+            0.94,
+            36,
+          ),
+          bottomMaterial,
+          [0, 3.08, 0],
+          [mass, 1, 0.7 * mass],
+        ),
+      );
+    }
+  }
+
+  if (outfit.outerwear) {
+    const coatChestScale = measurementScale(outfit.outerwear.chest, metrics.chest, 12, 0.86, 1.3);
+    const coatHipScale = measurementScale(outfit.outerwear.hips, metrics.hips, 12, 0.86, 1.32);
+    const coatLengthScale = lengthScale(outfit.outerwear.length, 82, 0.68, 1.28);
+    const coatMaterial = new THREE.MeshStandardMaterial({
+      color: outfit.outerwear.color,
+      roughness: 0.74,
+      transparent: true,
+      opacity: 0.93,
+    });
+    avatar.add(
+      mesh(
+        new THREE.CylinderGeometry(
+          0.85 * shoulderWidth * coatChestScale,
+          0.98 * hipWidth * coatHipScale,
+          2.92,
+          40,
+          1,
+          true,
+        ),
+        coatMaterial,
+        [0, 3.68 - (coatLengthScale - 1) * 0.78, -0.02],
+        [mass, coatLengthScale, 0.73 * mass],
+      ),
+    );
+  }
+
+  return avatar;
+}
+
 export function Avatar3D({
   metrics,
   outfit,
@@ -105,6 +305,7 @@ export function Avatar3D({
   focusOnReady?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const runtimeRef = useRef<SceneRuntime | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const viewSwitcherRef = useRef<HTMLDivElement>(null);
@@ -114,18 +315,30 @@ export function Avatar3D({
   const [renderFailed, setRenderFailed] = useState(false);
   const [retryVersion, setRetryVersion] = useState(0);
   const cameraViewRef = useRef<CameraView>("angle");
-  const sceneMetrics = useDebouncedValue(metrics, 180);
-  const sceneOutfit = useDebouncedValue(outfit, 180);
+  const sceneInput = useDebouncedAvatarInput(metrics, outfit, 180);
+  const sceneInputRef = useRef(sceneInput);
+  const compactRef = useRef(compact);
+
+  useEffect(() => {
+    sceneInputRef.current = sceneInput;
+  }, [sceneInput]);
+
+  useEffect(() => {
+    compactRef.current = compact;
+  }, [compact]);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
 
     const cleanups: Array<() => void> = [];
+    let runtime: SceneRuntime | null = null;
     let tornDown = false;
     const teardown = () => {
       if (tornDown) return;
       tornDown = true;
+      if (runtime) runtime.disposed = true;
+      if (runtimeRef.current === runtime) runtimeRef.current = null;
       for (const cleanup of cleanups.reverse()) {
         try {
           cleanup();
@@ -141,11 +354,11 @@ export function Avatar3D({
     try {
 
     const width = Math.max(mount.clientWidth, 280);
-    const height = Math.max(mount.clientHeight, compact ? 390 : 520);
+    const height = Math.max(mount.clientHeight, compactRef.current ? 390 : 520);
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     const smallScreenQuery = window.matchMedia("(max-width: 980px)");
-    const reduceMotion = motionQuery.matches;
-    const isSmallScreen = smallScreenQuery.matches;
+    let reduceMotion = motionQuery.matches;
+    let isSmallScreen = smallScreenQuery.matches;
     const navigatorWithHints = navigator as Navigator & {
       connection?: { saveData?: boolean };
       deviceMemory?: number;
@@ -156,15 +369,6 @@ export function Avatar3D({
       (navigatorWithHints.deviceMemory && navigatorWithHints.deviceMemory <= 4),
     );
     const scene = new THREE.Scene();
-    cleanups.push(() => {
-      scene.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry.dispose();
-          const materials = Array.isArray(object.material) ? object.material : [object.material];
-          materials.forEach((item) => item.dispose());
-        }
-      });
-    });
     const camera = new THREE.PerspectiveCamera(31, width / height, 0.1, 100);
     camera.position.set(...CAMERA_POSITIONS[cameraViewRef.current]);
     cameraRef.current = camera;
@@ -177,6 +381,10 @@ export function Avatar3D({
     cleanups.push(() => {
       renderer.dispose();
       renderer.forceContextLoss();
+    });
+    cleanups.push(() => {
+      disposeObject3D(scene);
+      scene.clear();
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, isSmallScreen || lowPowerDevice ? 1.25 : 2));
@@ -200,226 +408,9 @@ export function Avatar3D({
     rimLight.position.set(-5, 4, -4);
     scene.add(rimLight);
 
-    const avatar = new THREE.Group();
-    avatar.position.y = -3.02;
-    avatar.scale.y = sceneMetrics.height / 168;
+    const initialInput = sceneInputRef.current;
+    const avatar = buildAvatar(initialInput.metrics, initialInput.outfit);
     scene.add(avatar);
-
-    const bmi = sceneMetrics.weight / Math.pow(sceneMetrics.height / 100, 2);
-    const mass = THREE.MathUtils.clamp(0.88 + (bmi - 20) * 0.018, 0.76, 1.28);
-    const shoulderWidth = THREE.MathUtils.clamp(sceneMetrics.shoulder / 40, 0.78, 1.28);
-    const chestWidth = THREE.MathUtils.clamp(sceneMetrics.chest / 90, 0.8, 1.28);
-    const waistWidth = THREE.MathUtils.clamp(sceneMetrics.waist / 72, 0.76, 1.38);
-    const hipWidth = THREE.MathUtils.clamp(sceneMetrics.hips / 94, 0.78, 1.34);
-    const torsoScale = THREE.MathUtils.clamp(sceneMetrics.torso / 50, 0.84, 1.17);
-    const legScale = THREE.MathUtils.clamp(sceneMetrics.legs / 82, 0.86, 1.16);
-
-    const skin = material(sceneMetrics.skinTone, 0.82);
-    const hair = material("#332b2c", 0.9);
-    const eye = material("#44383b", 0.6);
-
-    avatar.add(mesh(new THREE.SphereGeometry(0.45, 40, 32), skin, [0, 5.75, 0], [0.92, 1.06, 0.9]));
-    avatar.add(mesh(new THREE.SphereGeometry(0.47, 32, 24), hair, [0, 5.88, -0.12], [1, 1.02, 0.78]));
-    avatar.add(mesh(new THREE.CylinderGeometry(0.17, 0.2, 0.42, 24), skin, [0, 5.22, 0]));
-    avatar.add(mesh(new THREE.SphereGeometry(0.035, 16, 12), eye, [-0.16, 5.82, 0.41]));
-    avatar.add(mesh(new THREE.SphereGeometry(0.035, 16, 12), eye, [0.16, 5.82, 0.41]));
-
-    const torso = mesh(
-      new THREE.CylinderGeometry(0.66 * waistWidth, 0.82 * hipWidth, 2.05, 40),
-      skin,
-      [0, 4.08, 0],
-      [chestWidth * mass, torsoScale, 0.62 * mass],
-    );
-    avatar.add(torso);
-    avatar.add(
-      mesh(
-        new THREE.SphereGeometry(0.83, 40, 28),
-        skin,
-        [0, 3.14, 0],
-        [hipWidth * mass, 0.62, 0.68 * mass],
-      ),
-    );
-
-    const armGeo = new THREE.CapsuleGeometry(0.17 * mass, 1.65, 8, 18);
-    const leftArm = mesh(armGeo, skin, [-0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
-    leftArm.rotation.z = -0.08;
-    const rightArm = mesh(armGeo.clone(), skin, [0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
-    rightArm.rotation.z = 0.08;
-    avatar.add(leftArm, rightArm);
-
-    const legGeo = new THREE.CapsuleGeometry(0.25 * mass, 2.42, 10, 22);
-    avatar.add(
-      mesh(legGeo, skin, [-0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
-      mesh(legGeo.clone(), skin, [0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
-    );
-    const shoeMaterial = material("#4c4548", 0.68);
-    avatar.add(
-      mesh(new THREE.SphereGeometry(0.31, 24, 16), shoeMaterial, [-0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
-      mesh(new THREE.SphereGeometry(0.31, 24, 16), shoeMaterial, [0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
-    );
-
-    if (sceneOutfit.dress) {
-      const dressChestScale = measurementScale(
-        sceneOutfit.dress.chest,
-        sceneMetrics.chest,
-        6,
-        0.86,
-        1.24,
-      );
-      const dressWaistScale = measurementScale(
-        sceneOutfit.dress.waist,
-        sceneMetrics.waist,
-        5,
-        0.86,
-        1.28,
-      );
-      const dressHipScale = measurementScale(
-        sceneOutfit.dress.hips,
-        sceneMetrics.hips,
-        8,
-        0.86,
-        1.3,
-      );
-      const dressLengthScale = lengthScale(sceneOutfit.dress.length, 110, 0.72, 1.22);
-      const dressMaterial = material(sceneOutfit.dress.color, 0.78);
-      avatar.add(
-        mesh(
-          new THREE.CylinderGeometry(
-            0.76 * chestWidth * dressChestScale,
-            0.78 * waistWidth * dressWaistScale,
-            1.45,
-            40,
-          ),
-          dressMaterial,
-          [0, 4.2, 0],
-          [mass, torsoScale, 0.67 * mass],
-        ),
-        mesh(
-          new THREE.CylinderGeometry(
-            0.78 * waistWidth * dressWaistScale,
-            1.12 * hipWidth * dressHipScale,
-            2.12,
-            40,
-          ),
-          dressMaterial,
-          [0, 2.75 - (dressLengthScale - 1) * 0.72, 0],
-          [mass, dressLengthScale, 0.69 * mass],
-        ),
-      );
-    } else {
-      if (sceneOutfit.top) {
-        const topChestScale = measurementScale(
-          sceneOutfit.top.chest,
-          sceneMetrics.chest,
-          8,
-          0.84,
-          1.28,
-        );
-        const topWaistScale = measurementScale(
-          sceneOutfit.top.waist,
-          sceneMetrics.waist,
-          8,
-          0.84,
-          1.32,
-        );
-        const topLengthScale = lengthScale(sceneOutfit.top.length, 65, 0.68, 1.25);
-        avatar.add(
-          mesh(
-            new THREE.CylinderGeometry(
-              0.77 * chestWidth * topChestScale,
-              0.78 * waistWidth * topWaistScale,
-              1.64,
-              40,
-            ),
-            material(sceneOutfit.top.color, 0.76),
-            [0, 4.22 - (topLengthScale - 1) * 0.55, 0],
-            [mass, torsoScale * topLengthScale, 0.68 * mass],
-          ),
-        );
-      }
-      if (sceneOutfit.bottom) {
-        const bottomWaistScale = measurementScale(
-          sceneOutfit.bottom.waist,
-          sceneMetrics.waist,
-          4,
-          0.86,
-          1.3,
-        );
-        const bottomHipScale = measurementScale(
-          sceneOutfit.bottom.hips,
-          sceneMetrics.hips,
-          6,
-          0.86,
-          1.3,
-        );
-        const bottomLengthScale = lengthScale(sceneOutfit.bottom.length, 100, 0.58, 1.16);
-        const bottomMaterial = material(sceneOutfit.bottom.color, 0.8);
-        avatar.add(
-          mesh(
-            new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
-            bottomMaterial,
-            [-0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
-            [1.05, legScale * bottomLengthScale, 1.08],
-          ),
-          mesh(
-            new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
-            bottomMaterial,
-            [0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
-            [1.05, legScale * bottomLengthScale, 1.08],
-          ),
-          mesh(
-            new THREE.CylinderGeometry(
-              0.76 * waistWidth * bottomWaistScale,
-              0.94 * hipWidth * bottomHipScale,
-              0.94,
-              36,
-            ),
-            bottomMaterial,
-            [0, 3.08, 0],
-            [mass, 1, 0.7 * mass],
-          ),
-        );
-      }
-    }
-
-    if (sceneOutfit.outerwear) {
-      const coatChestScale = measurementScale(
-        sceneOutfit.outerwear.chest,
-        sceneMetrics.chest,
-        12,
-        0.86,
-        1.3,
-      );
-      const coatHipScale = measurementScale(
-        sceneOutfit.outerwear.hips,
-        sceneMetrics.hips,
-        12,
-        0.86,
-        1.32,
-      );
-      const coatLengthScale = lengthScale(sceneOutfit.outerwear.length, 82, 0.68, 1.28);
-      const coatMaterial = new THREE.MeshStandardMaterial({
-        color: sceneOutfit.outerwear.color,
-        roughness: 0.74,
-        transparent: true,
-        opacity: 0.93,
-      });
-      avatar.add(
-        mesh(
-          new THREE.CylinderGeometry(
-            0.85 * shoulderWidth * coatChestScale,
-            0.98 * hipWidth * coatHipScale,
-            2.92,
-            40,
-            1,
-            true,
-          ),
-          coatMaterial,
-          [0, 3.68 - (coatLengthScale - 1) * 0.78, -0.02],
-          [mass, coatLengthScale, 0.73 * mass],
-        ),
-      );
-    }
 
     const floor = new THREE.Mesh(
       new THREE.CircleGeometry(2.65, 64),
@@ -449,7 +440,7 @@ export function Avatar3D({
     let inViewport = true;
     let pageVisible = !document.hidden;
     let rendererFailed = false;
-    const continuousAnimation = controls.autoRotate;
+    let rendering = false;
     const failRendering = () => {
       if (rendererFailed) return;
       rendererFailed = true;
@@ -457,7 +448,9 @@ export function Avatar3D({
       teardown();
     };
     const renderFrame = (timestamp = performance.now()) => {
-      if (rendererFailed) return false;
+      if (rendererFailed || tornDown) return false;
+      if (rendering) return true;
+      rendering = true;
       try {
         const deltaSeconds = Math.min(0.1, Math.max(0, timestamp - lastRenderTime) / 1000);
         controls.update(deltaSeconds);
@@ -467,19 +460,19 @@ export function Avatar3D({
       } catch {
         failRendering();
         return false;
+      } finally {
+        rendering = false;
       }
     };
     const handleControlsChange = () => {
-      if (!animationFrame && !animationTimer) renderFrame();
+      if (!rendering && !controls.autoRotate && !animationFrame && !animationTimer) renderFrame();
     };
-    if (!continuousAnimation) {
-      controls.addEventListener("change", handleControlsChange);
-      cleanups.push(() => controls.removeEventListener("change", handleControlsChange));
-    }
+    controls.addEventListener("change", handleControlsChange);
+    cleanups.push(() => controls.removeEventListener("change", handleControlsChange));
     const scheduleAnimation = () => {
       if (
         rendererFailed ||
-        !continuousAnimation ||
+        !controls.autoRotate ||
         !inViewport ||
         !pageVisible ||
         animationFrame ||
@@ -501,7 +494,7 @@ export function Avatar3D({
     };
     const startAnimation = () => {
       if (rendererFailed) return;
-      if (!continuousAnimation) {
+      if (!controls.autoRotate) {
         if (inViewport && pageVisible) renderFrame();
         return;
       }
@@ -529,20 +522,37 @@ export function Avatar3D({
     renderer.domElement.addEventListener("webglcontextlost", handleContextLost);
     cleanups.push(() => renderer.domElement.removeEventListener("webglcontextlost", handleContextLost));
 
-    const handleEnvironmentChange = () => {
-      setRetryVersion((current) => current + 1);
-    };
-    const listenForMediaChange = (query: MediaQueryList) => {
+    const listenForMediaChange = (query: MediaQueryList, handler: () => void) => {
       if (typeof query.addEventListener === "function") {
-        query.addEventListener("change", handleEnvironmentChange);
-        cleanups.push(() => query.removeEventListener("change", handleEnvironmentChange));
+        query.addEventListener("change", handler);
+        cleanups.push(() => query.removeEventListener("change", handler));
       } else {
-        query.addListener(handleEnvironmentChange);
-        cleanups.push(() => query.removeListener(handleEnvironmentChange));
+        query.addListener(handler);
+        cleanups.push(() => query.removeListener(handler));
       }
     };
-    listenForMediaChange(motionQuery);
-    listenForMediaChange(smallScreenQuery);
+    const handleMotionChange = () => {
+      reduceMotion = motionQuery.matches;
+      controls.enableDamping = !reduceMotion && !lowPowerDevice;
+      controls.autoRotate = !reduceMotion && !lowPowerDevice;
+      if (controls.autoRotate) startAnimation();
+      else {
+        stopAnimation();
+        renderFrame();
+      }
+    };
+    const handleScreenChange = () => {
+      isSmallScreen = smallScreenQuery.matches;
+      renderer.setPixelRatio(
+        Math.min(window.devicePixelRatio, isSmallScreen || lowPowerDevice ? 1.25 : 2),
+      );
+      keyLight.shadow.map?.dispose();
+      keyLight.shadow.map = null;
+      const shadowSize = isSmallScreen || lowPowerDevice ? 512 : 1024;
+      keyLight.shadow.mapSize.set(shadowSize, shadowSize);
+      renderer.shadowMap.needsUpdate = true;
+      handleResize();
+    };
 
     const intersectionObserver = typeof IntersectionObserver === "undefined"
       ? null
@@ -568,6 +578,22 @@ export function Avatar3D({
         failRendering();
       }
     };
+    runtime = {
+      scene,
+      camera,
+      renderer,
+      controls,
+      avatar,
+      metrics: initialInput.metrics,
+      outfit: initialInput.outfit,
+      renderFrame,
+      resize: handleResize,
+      failRendering,
+      disposed: false,
+    };
+    runtimeRef.current = runtime;
+    listenForMediaChange(motionQuery, handleMotionChange);
+    listenForMediaChange(smallScreenQuery, handleScreenChange);
     const resizeObserver = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(handleResize);
@@ -608,7 +634,37 @@ export function Avatar3D({
         teardown();
       };
     }
-  }, [sceneMetrics, sceneOutfit, compact, retryVersion]);
+  }, [retryVersion]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (
+      !runtime ||
+      runtime.disposed ||
+      (runtime.metrics === sceneInput.metrics && runtime.outfit === sceneInput.outfit)
+    ) return;
+
+    let nextAvatar: THREE.Group | null = null;
+    try {
+      nextAvatar = buildAvatar(sceneInput.metrics, sceneInput.outfit);
+      runtime.scene.add(nextAvatar);
+      const previousAvatar = runtime.avatar;
+      runtime.avatar = nextAvatar;
+      runtime.metrics = sceneInput.metrics;
+      runtime.outfit = sceneInput.outfit;
+      runtime.scene.remove(previousAvatar);
+      disposeObject3D(previousAvatar);
+      runtime.renderer.shadowMap.needsUpdate = true;
+      runtime.renderFrame();
+    } catch {
+      if (nextAvatar && nextAvatar !== runtime.avatar) disposeObject3D(nextAvatar);
+      runtime.failRendering();
+    }
+  }, [sceneInput, retryVersion]);
+
+  useEffect(() => {
+    runtimeRef.current?.resize();
+  }, [compact]);
 
   useEffect(() => {
     const camera = cameraRef.current;

@@ -33,6 +33,50 @@ function validSourceUrl(value: string) {
   }
 }
 
+async function requestWithLimitedBody(request: Request, limit: number) {
+  if (!request.body) return { request, tooLarge: false } as const;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        try {
+          await reader.cancel("request body limit exceeded");
+        } catch {
+          // Returning 413 is still safe if the upstream stream cannot be cancelled.
+        }
+        return { request: null, tooLarge: true } as const;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  return {
+    request: new Request(request.url, {
+      method: request.method,
+      headers,
+      body,
+      signal: request.signal,
+    }),
+    tooLarge: false,
+  } as const;
+}
+
 function bytesLabel(bytes: Uint8Array, offset: number, length: number) {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));
 }
@@ -286,6 +330,16 @@ export async function POST(request: Request) {
     if (Number.isFinite(declaredLength) && declaredLength > MAX_MULTIPART_BYTES) {
       return Response.json({ error: "request is too large" }, { status: 413 });
     }
+    let limitedRequest: Request;
+    try {
+      const limited = await requestWithLimitedBody(request, MAX_MULTIPART_BYTES);
+      if (limited.tooLarge) {
+        return Response.json({ error: "request is too large" }, { status: 413 });
+      }
+      limitedRequest = limited.request;
+    } catch {
+      return Response.json({ error: "invalid form data" }, { status: 400 });
+    }
     const db = await getRawDb();
     await ensureWardrobeTables(db);
     await cleanupPendingImages(db);
@@ -301,7 +355,7 @@ export async function POST(request: Request) {
     }
     let form: FormData;
     try {
-      form = await request.formData();
+      form = await limitedRequest.formData();
     } catch {
       return Response.json({ error: "invalid form data" }, { status: 400 });
     }

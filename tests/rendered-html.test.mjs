@@ -41,7 +41,7 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, avatar, deferredAvatar, wardrobeRoute, hosting, packageJson, requestOwner] = await Promise.all([
+  const [page, layout, app, avatar, deferredAvatar, wardrobeRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
@@ -51,6 +51,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/request-owner.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /<MuseApp[^>]+storageOwner=/);
@@ -64,6 +65,22 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /本机已保存/);
   assert.match(app, /Promise\.allSettled/);
   assert.match(app, /localSnapshotKey\(storageOwner\)/);
+  assert.match(app, /isClearedLocalSnapshot/);
+  assert.match(app, /inert=\{clearingData \? true : undefined\}/);
+  assert.match(app, /浏览器阻止清除本机副本/);
+  assert.match(app, /preservePersistedPhotos/);
+  assert.match(app, /invalidateRecognizedMeasurements/);
+  assert.match(app, /dailyPreferences/);
+  assert.match(app, /rankOutfitSelections/);
+  assert.match(app, /pendingMutations\.map\(\(mutation\) => mutation\.promise\)/);
+  assert.match(app, /CLOUD_MUTATION_TIMEOUT_MS/);
+  assert.match(app, /CLOUD_UPLOAD_TIMEOUT_MS/);
+  assert.match(app, /pendingMutations\.forEach\(\(mutation\) => mutation\.controller\.abort\(\)\)/);
+  assert.ok(
+    app.indexOf("latestSnapshot.current = emptySnapshot") <
+      app.indexOf('fetchCloudMutation("/api/wardrobe?scope=all"'),
+    "device state must be cleared before cloud deletion begins",
+  );
   assert.match(app, /cloudItemIds\.current\.has/);
   assert.match(app, /savedProductIds/);
   assert.match(avatar, /WebGLRenderer/);
@@ -72,6 +89,10 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /forceContextLoss/);
   assert.match(avatar, /1000 \/ 30/);
   assert.match(avatar, /controls\.update\(deltaSeconds\)/);
+  assert.match(avatar, /runtimeRef/);
+  assert.match(avatar, /disposeObject3D\(previousAvatar\)/);
+  assert.match(avatar, /shadowMap\.needsUpdate = true/);
+  assert.doesNotMatch(avatar, /\[sceneMetrics, sceneOutfit, compact, retryVersion\]/);
   assert.match(avatar, /role="group"/);
   assert.match(deferredAvatar, /requestIdleCallback/);
   assert.match(deferredAvatar, /saveData/);
@@ -82,6 +103,11 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(wardrobeRoute, /db\.batch/);
   assert.match(wardrobeRoute, /image deletion temporarily unavailable/);
   assert.match(wardrobeRoute, /crc32/);
+  assert.match(wardrobeRoute, /requestWithLimitedBody/);
+  assert.match(wardrobeRoute, /reader\.cancel/);
+  assert.match(wardrobeRoute, /headers\.delete\("transfer-encoding"\)/);
+  assert.match(styles, /\.save-button, \.icon-button, \.cart-list article > button \{ min-width: 44px; \}/);
+  assert.match(styles, /\.choice-group legend[\s\S]*font-size: 12px;/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);

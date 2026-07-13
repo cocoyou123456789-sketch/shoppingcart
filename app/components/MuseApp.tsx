@@ -6,6 +6,8 @@ import { flushSync } from "react-dom";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 import { DeferredAvatar } from "./DeferredAvatar";
 import { extractGarmentMeasurements } from "../lib/garment-analysis.mjs";
+import { rankOutfitSelections } from "../lib/outfit-ranking.mjs";
+import { preservePersistedPhotos } from "../lib/device-storage.mjs";
 import {
   BODY_PRESETS,
   PRODUCTS,
@@ -23,6 +25,12 @@ type OutfitSelection = {
   dressId?: string;
   outerwearId?: string;
 };
+type DailyPreferences = {
+  weather: string;
+  occasion: string;
+  feeling: string;
+  comfort: string;
+};
 
 const LOCAL_SNAPSHOT_KEY = "songsong-closet:device-state:v1";
 
@@ -35,11 +43,16 @@ type LocalSnapshot = {
   cartProductIds?: string[];
   savedProductIds?: string[];
   cloudItemIds?: string[];
+  dailyPreferences?: DailyPreferences;
   updatedAt?: string;
 };
 
 type DeviceSaveResult = "complete" | "metadata-only" | "failed";
 type DataMode = "连接中" | "云端已同步" | "部分已同步" | "本机已保存" | "仅本次有效";
+type PendingCloudMutation = {
+  promise: Promise<Response>;
+  controller: AbortController;
+};
 
 const NAV_ITEMS: { id: View; label: string; short: string; icon: string }[] = [
   { id: "home", label: "今天", short: "今天", icon: "⌂" },
@@ -66,6 +79,20 @@ const INITIAL_OUTFIT: OutfitSelection = {
   topId: "w-cream-tee",
   bottomId: "w-green-pants",
   outerwearId: "w-oat-coat",
+};
+
+const DAILY_OPTIONS = {
+  weather: ["炎热", "温和", "偏凉", "下雨"],
+  occasion: ["通勤", "上课", "约会", "运动", "宅家"],
+  feeling: ["轻松", "利落", "温柔", "有点亮眼"],
+  comfort: ["方便走动", "宽松", "不露肤", "保暖"],
+} as const;
+
+const DEFAULT_DAILY_PREFERENCES: DailyPreferences = {
+  weather: "温和",
+  occasion: "通勤",
+  feeling: "轻松",
+  comfort: "方便走动",
 };
 
 const SHOP_CATEGORIES: ("全部" | ShopCategory)[] = [
@@ -102,6 +129,8 @@ const STYLE_OPTIONS = ["轻松", "利落", "温柔", "有点亮眼"] as const;
 const CLIENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_CLIENT_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_WARDROBE_ITEMS = 200;
+const CLOUD_MUTATION_TIMEOUT_MS = 9_000;
+const CLOUD_UPLOAD_TIMEOUT_MS = 60_000;
 const SKIN_TONES = [
   ["#f2d4bd", "浅暖色"],
   ["#dfb08d", "暖米色"],
@@ -226,6 +255,25 @@ function mergeWardrobe(...collections: WardrobeItem[][]) {
   });
 }
 
+function normalizeDailyPreferences(value: unknown): DailyPreferences | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<DailyPreferences>;
+  return {
+    weather: DAILY_OPTIONS.weather.includes(candidate.weather as (typeof DAILY_OPTIONS.weather)[number])
+      ? candidate.weather!
+      : DEFAULT_DAILY_PREFERENCES.weather,
+    occasion: DAILY_OPTIONS.occasion.includes(candidate.occasion as (typeof DAILY_OPTIONS.occasion)[number])
+      ? candidate.occasion!
+      : DEFAULT_DAILY_PREFERENCES.occasion,
+    feeling: DAILY_OPTIONS.feeling.includes(candidate.feeling as (typeof DAILY_OPTIONS.feeling)[number])
+      ? candidate.feeling!
+      : DEFAULT_DAILY_PREFERENCES.feeling,
+    comfort: DAILY_OPTIONS.comfort.includes(candidate.comfort as (typeof DAILY_OPTIONS.comfort)[number])
+      ? candidate.comfort!
+      : DEFAULT_DAILY_PREFERENCES.comfort,
+  };
+}
+
 function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
   try {
     const raw = window.localStorage.getItem(storageKey);
@@ -265,6 +313,7 @@ function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
       cloudItemIds: Array.isArray(parsed.cloudItemIds)
         ? parsed.cloudItemIds.filter((id): id is string => typeof id === "string")
         : undefined,
+      dailyPreferences: normalizeDailyPreferences(parsed.dailyPreferences),
       updatedAt: parsed.updatedAt,
     };
   } catch {
@@ -274,10 +323,7 @@ function readLocalSnapshot(storageKey: string): LocalSnapshot | null {
 
 function writeLocalSnapshot(
   storageKey: string,
-  { wardrobe, metrics, outfit, mood, cartProductIds, savedProductIds, cloudItemIds }: Omit<LocalSnapshot, "version" | "updatedAt">,
-): DeviceSaveResult {
-  const snapshot = JSON.stringify({
-    version: 1,
+  {
     wardrobe,
     metrics,
     outfit,
@@ -285,36 +331,82 @@ function writeLocalSnapshot(
     cartProductIds,
     savedProductIds,
     cloudItemIds,
-    updatedAt: new Date().toISOString(),
-  });
+    dailyPreferences,
+  }: Omit<LocalSnapshot, "version" | "updatedAt">,
+): DeviceSaveResult {
+  const updatedAt = new Date().toISOString();
+  const serialize = (snapshotWardrobe: WardrobeItem[]) => JSON.stringify({
+      version: 1,
+      wardrobe: snapshotWardrobe,
+      metrics,
+      outfit,
+      mood,
+      cartProductIds,
+      savedProductIds,
+      cloudItemIds,
+      dailyPreferences,
+      updatedAt,
+    });
   try {
-    window.localStorage.setItem(storageKey, snapshot);
+    window.localStorage.setItem(storageKey, serialize(wardrobe));
     return "complete";
   } catch {
-    const withoutPhotos = wardrobe.map((item) => ({
-      ...item,
-      imageUrl: item.imageUrl && /^(data:|blob:)/.test(item.imageUrl) ? undefined : item.imageUrl,
-    }));
+    let previousRaw: string | null = null;
     try {
-      window.localStorage.setItem(
-        storageKey,
-        JSON.stringify({
-          version: 1,
-          wardrobe: withoutPhotos,
-          metrics,
-          outfit,
-          mood,
-          cartProductIds,
-          savedProductIds,
-          cloudItemIds,
-          updatedAt: new Date().toISOString(),
-        }),
-      );
+      previousRaw = window.localStorage.getItem(storageKey);
+    } catch {
+      // Storage can be write-limited and read-limited independently.
+    }
+    const safeFallback = preservePersistedPhotos(wardrobe, previousRaw);
+    try {
+      window.localStorage.setItem(storageKey, serialize(safeFallback));
       return "metadata-only";
     } catch {
-      // Device storage may be disabled or full; the current session still works.
+      // Leave the previous snapshot untouched instead of deleting already-saved photos.
       return "failed";
     }
+  }
+}
+
+function removeLocalSnapshot(storageKey: string) {
+  try {
+    window.localStorage.removeItem(storageKey);
+    return window.localStorage.getItem(storageKey) === null;
+  } catch {
+    return false;
+  }
+}
+
+function isClearedLocalSnapshot(storageKey: string) {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw === null) return true;
+    const parsed = JSON.parse(raw) as Partial<LocalSnapshot>;
+    const metrics = parsed.metrics as Partial<BodyMetrics> | undefined;
+    const outfit = parsed.outfit ?? {};
+    const dailyPreferences = normalizeDailyPreferences(parsed.dailyPreferences);
+    return (
+      Array.isArray(parsed.wardrobe) &&
+      parsed.wardrobe.length === 0 &&
+      Boolean(metrics) &&
+      Object.entries(DEFAULT_METRICS).every(
+        ([key, value]) => metrics?.[key as keyof BodyMetrics] === value,
+      ) &&
+      Object.values(outfit).every((value) => !value) &&
+      parsed.mood === 62 &&
+      Array.isArray(parsed.cartProductIds) &&
+      parsed.cartProductIds.length === 0 &&
+      Array.isArray(parsed.savedProductIds) &&
+      parsed.savedProductIds.length === 0 &&
+      Array.isArray(parsed.cloudItemIds) &&
+      parsed.cloudItemIds.length === 0 &&
+      Boolean(dailyPreferences) &&
+      Object.entries(DEFAULT_DAILY_PREFERENCES).every(
+        ([key, value]) => dailyPreferences?.[key as keyof DailyPreferences] === value,
+      )
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -396,16 +488,19 @@ async function photoToDeviceImage(file?: File) {
   if (!file) return undefined;
   try {
     const bitmap = await createImageBitmap(file);
-    const maxEdge = 900;
-    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) return undefined;
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
-    return canvas.toDataURL("image/jpeg", 0.76);
+    try {
+      const maxEdge = 900;
+      const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return undefined;
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", 0.76);
+    } finally {
+      bitmap.close();
+    }
   } catch {
     return undefined;
   }
@@ -424,6 +519,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const [celebrationOpen, setCelebrationOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [mood, setMood] = useState(62);
+  const [dailyPreferences, setDailyPreferences] = useState<DailyPreferences>(DEFAULT_DAILY_PREFERENCES);
   const [dataMode, setDataMode] = useState<DataMode>("连接中");
   const [ready, setReady] = useState(false);
   const [clearingData, setClearingData] = useState(false);
@@ -434,6 +530,8 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const previousView = useRef<View>(view);
   const cloudItemIds = useRef(new Set<string>());
   const cartProductIds = useRef(new Set<string>());
+  const mutationEpoch = useRef(0);
+  const pendingCloudMutations = useRef(new Set<PendingCloudMutation>());
   const latestSnapshot = useRef<Omit<LocalSnapshot, "version" | "updatedAt">>({
     wardrobe,
     metrics,
@@ -442,6 +540,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cartProductIds: [],
     savedProductIds: [],
     cloudItemIds: [],
+    dailyPreferences,
   });
   latestSnapshot.current = {
     wardrobe,
@@ -451,8 +550,32 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     cartProductIds: cart.map((product) => product.id),
     savedProductIds,
     cloudItemIds: [...cloudItemIds.current],
+    dailyPreferences,
   };
   cartProductIds.current = new Set(cart.map((product) => product.id));
+
+  function fetchCloudMutation(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    timeoutMs = CLOUD_MUTATION_TIMEOUT_MS,
+  ) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const promise = fetch(input, { ...init, signal: controller.signal });
+    const mutation = { promise, controller };
+    pendingCloudMutations.current.add(mutation);
+    void promise.then(
+      () => {
+        window.clearTimeout(timeout);
+        pendingCloudMutations.current.delete(mutation);
+      },
+      () => {
+        window.clearTimeout(timeout);
+        pendingCloudMutations.current.delete(mutation);
+      },
+    );
+    return promise;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -464,6 +587,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       if (local?.metrics) setMetrics((current) => ({ ...current, ...local.metrics }));
       if (local?.outfit) setOutfit(local.outfit);
       if (typeof local?.mood === "number") setMood(local.mood);
+      if (local?.dailyPreferences) setDailyPreferences(local.dailyPreferences);
       if (local?.cartProductIds) {
         setCart((current) => {
           const next = productsForIds([...local.cartProductIds!, ...current.map((item) => item.id)]);
@@ -523,6 +647,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       }
       if (local?.outfit) setOutfit(local.outfit);
       if (typeof local?.mood === "number") setMood(local.mood);
+      if (local?.dailyPreferences) setDailyPreferences(local.dailyPreferences);
       if (local?.cartProductIds) {
         setCart((current) => {
           const next = productsForIds([...local.cartProductIds!, ...current.map((item) => item.id)]);
@@ -534,7 +659,21 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         setSavedProductIds((current) => [...new Set([...local.savedProductIds!, ...current])]);
       }
       const successCount = Number(closetResult.status === "fulfilled") + Number(profileResult.status === "fulfilled");
-      setDataMode(successCount === 2 ? "云端已同步" : successCount === 1 ? "部分已同步" : "本机已保存");
+      const syncedWardrobeIds = closetResult.status === "fulfilled"
+        ? new Set((closetResult.value.items ?? []).map((item) => item.id))
+        : storedCloudItemIds;
+      const hasPendingWardrobe = Boolean(
+        local?.wardrobe.some(
+          (item) => item.source === "我的衣服" && !syncedWardrobeIds.has(item.id),
+        ),
+      );
+      setDataMode(
+        successCount === 2 && !hasPendingWardrobe
+          ? "云端已同步"
+          : successCount >= 1
+            ? "部分已同步"
+            : "本机已保存",
+      );
       hydrated.current = true;
       setReady(true);
     });
@@ -569,7 +708,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [wardrobe, metrics, outfit, mood, cart, savedProductIds, dataMode, storageKey]);
+  }, [wardrobe, metrics, outfit, mood, cart, savedProductIds, dailyPreferences, dataMode, storageKey]);
 
   useEffect(() => {
     const flushDeviceState = () => {
@@ -695,16 +834,22 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
 
   async function deleteWardrobeItem(item: WardrobeItem) {
     if (!window.confirm(`确定从衣橱移除“${item.name}”吗？这不会影响真实购买记录。`)) return;
+    const requestEpoch = mutationEpoch.current;
     let deletedFromCloud = false;
     const shouldDeleteFromCloud =
       !usesDeviceOnlyStorage() && cloudItemIds.current.has(item.id);
     if (shouldDeleteFromCloud) {
       try {
-        const response = await fetch(`/api/wardrobe?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
+        const response = await fetchCloudMutation(
+          `/api/wardrobe?id=${encodeURIComponent(item.id)}`,
+          { method: "DELETE" },
+        );
+        if (mutationEpoch.current !== requestEpoch) return;
         if (!response.ok) throw new Error("Delete failed");
         deletedFromCloud = true;
         cloudItemIds.current.delete(item.id);
       } catch {
+        if (mutationEpoch.current !== requestEpoch) return;
         setToast("云端删除没有成功，这件衣服仍保留在衣橱中");
         return;
       }
@@ -719,7 +864,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       }));
     });
     if (deletedFromCloud) {
-      setDataMode((current) => current === "部分已同步" ? current : "云端已同步");
+      const hasPendingWardrobe = latestSnapshot.current.wardrobe.some(
+        (entry) => entry.source === "我的衣服" && !cloudItemIds.current.has(entry.id),
+      );
+      setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
     }
     else markLocalChange();
     writeLocalSnapshot(storageKey, latestSnapshot.current);
@@ -751,17 +899,26 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       setToast("分身参数已保存在这台设备");
       return;
     }
+    const requestEpoch = mutationEpoch.current;
     try {
-      const response = await fetch("/api/profile", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(metrics),
-      });
+      const response = await fetchCloudMutation(
+        "/api/profile",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(metrics),
+        },
+      );
+      if (mutationEpoch.current !== requestEpoch) return;
       if (!response.ok) throw new Error();
-      setDataMode("云端已同步");
-      setToast("分身参数已安心保存");
+      const hasPendingWardrobe = latestSnapshot.current.wardrobe.some(
+        (item) => item.source === "我的衣服" && !cloudItemIds.current.has(item.id),
+      );
+      setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
+      setToast(hasPendingWardrobe ? "分身参数已保存；仍有衣物只保存在本机" : "分身参数已安心保存");
     } catch {
-      setDataMode("本机已保存");
+      if (mutationEpoch.current !== requestEpoch) return;
+      setDataMode("部分已同步");
       setToast("分身参数已保存在这台设备");
     }
   }
@@ -771,14 +928,16 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       setToast(`衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件再添加`);
       return;
     }
+    const requestEpoch = mutationEpoch.current;
     const addToDevice = async () => {
       const deviceImage = await photoToDeviceImage(photo);
+      if (mutationEpoch.current !== requestEpoch) return false;
       const localItem = { ...item, imageUrl: deviceImage };
       setWardrobe((current) => [
         localItem,
         ...current.filter((entry) => entry.id !== localItem.id),
       ]);
-      setDataMode("本机已保存");
+      setDataMode(usesDeviceOnlyStorage() ? "本机已保存" : "部分已同步");
       return !photo || Boolean(deviceImage);
     };
 
@@ -792,20 +951,31 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           if (value !== undefined) form.append(key, String(value));
         });
         if (photo) form.append("photo", photo);
-        const response = await fetch("/api/wardrobe", { method: "POST", body: form });
+        const response = await fetchCloudMutation(
+          "/api/wardrobe",
+          { method: "POST", body: form },
+          CLOUD_UPLOAD_TIMEOUT_MS,
+        );
+        if (mutationEpoch.current !== requestEpoch) return;
         if (response.status === 409) {
           setToast(`云端衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件`);
           return;
         }
         if (!response.ok) throw new Error();
         const data = (await response.json()) as { item: WardrobeItem };
+        if (mutationEpoch.current !== requestEpoch) return;
         cloudItemIds.current.add(data.item.id);
         setWardrobe((current) => [data.item, ...current]);
-        setDataMode("云端已同步");
+        const hasPendingWardrobe = wardrobe.some(
+          (entry) => entry.source === "我的衣服" && !cloudItemIds.current.has(entry.id),
+        );
+        setDataMode((current) => current === "部分已同步" || hasPendingWardrobe ? "部分已同步" : "云端已同步");
       } catch {
+        if (mutationEpoch.current !== requestEpoch) return;
         photoSaved = await addToDevice();
       }
     }
+    if (mutationEpoch.current !== requestEpoch) return;
     setAddOpen(false);
     setToast(
       photoSaved
@@ -820,68 +990,115 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       "确定清除衣橱、身体参数、搭配、收藏和虚拟购物袋吗？登录版也会清除云端资料。这个操作不能撤销。",
     );
     if (!confirmed) return;
-    setClearingData(true);
+
+    const deviceOnly = usesDeviceOnlyStorage();
+    const emptySnapshot: Omit<LocalSnapshot, "version" | "updatedAt"> = {
+      wardrobe: [],
+      metrics: DEFAULT_METRICS,
+      outfit: {},
+      mood: 62,
+      cartProductIds: [],
+      savedProductIds: [],
+      cloudItemIds: [],
+      dailyPreferences: DEFAULT_DAILY_PREFERENCES,
+    };
+
+    mutationEpoch.current += 1;
+    const pendingMutations = [...pendingCloudMutations.current];
+    cloudItemIds.current.clear();
+    cartProductIds.current.clear();
+    latestSnapshot.current = emptySnapshot;
+    const currentRemoved = removeLocalSnapshot(storageKey);
+    const legacyRemoved = storageKey === LOCAL_SNAPSHOT_KEY
+      ? currentRemoved
+      : removeLocalSnapshot(LOCAL_SNAPSHOT_KEY);
+    flushSync(() => {
+      setCartOpen(false);
+      setAddOpen(false);
+      setCelebrationOpen(false);
+      setWardrobe([]);
+      setMetrics(DEFAULT_METRICS);
+      setOutfit({});
+      setMood(62);
+      setCart([]);
+      setSavedProductIds([]);
+      setDailyPreferences(DEFAULT_DAILY_PREFERENCES);
+      setClearingData(true);
+    });
+
+    const saveResult = writeLocalSnapshot(storageKey, emptySnapshot);
+    const legacySaveResult = storageKey !== LOCAL_SNAPSHOT_KEY && !legacyRemoved
+      ? writeLocalSnapshot(LOCAL_SNAPSHOT_KEY, emptySnapshot)
+      : null;
+    const currentCleared =
+      currentRemoved || saveResult !== "failed" || isClearedLocalSnapshot(storageKey);
+    const legacyCleared = storageKey === LOCAL_SNAPSHOT_KEY
+      ? currentCleared
+      : legacyRemoved ||
+        (legacySaveResult !== null && legacySaveResult !== "failed") ||
+        isClearedLocalSnapshot(LOCAL_SNAPSHOT_KEY);
+    const localCleared = currentCleared && legacyCleared;
+
     try {
-      if (!usesDeviceOnlyStorage()) {
-        const wardrobeResponse = await fetch("/api/wardrobe?scope=all", {
-          method: "DELETE",
-        });
-        if (!wardrobeResponse.ok) throw new Error("wardrobe deletion failed");
-        const profileResponse = await fetch("/api/profile", { method: "DELETE" });
-        if (!profileResponse.ok) throw new Error("profile deletion failed");
+      if (!deviceOnly) {
+        pendingMutations.forEach((mutation) => mutation.controller.abort());
+        await Promise.allSettled(
+          pendingMutations.map((mutation) => mutation.promise),
+        );
+
+        const deletionResults = await Promise.allSettled([
+          fetchCloudMutation("/api/wardrobe?scope=all", { method: "DELETE" }),
+          fetchCloudMutation("/api/profile", { method: "DELETE" }),
+        ]);
+        const cloudCleared = deletionResults.every(
+          (result) => result.status === "fulfilled" && result.value.ok,
+        );
+        if (!cloudCleared) {
+          throw new Error("cloud deletion failed");
+        }
       }
 
-      const emptySnapshot: Omit<LocalSnapshot, "version" | "updatedAt"> = {
-        wardrobe: [],
-        metrics: DEFAULT_METRICS,
-        outfit: {},
-        mood: 62,
-        cartProductIds: [],
-        savedProductIds: [],
-        cloudItemIds: [],
-      };
-      try {
-        window.localStorage.removeItem(storageKey);
-        if (storageKey !== LOCAL_SNAPSHOT_KEY) {
-          window.localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
-        }
-      } catch {
-        // The empty overwrite below is still attempted when storage access is limited.
-      }
-      cloudItemIds.current.clear();
-      cartProductIds.current.clear();
-      latestSnapshot.current = emptySnapshot;
-      flushSync(() => {
-        setWardrobe([]);
-        setMetrics(DEFAULT_METRICS);
-        setOutfit({});
-        setMood(62);
-        setCart([]);
-        setSavedProductIds([]);
-        setCartOpen(false);
-        setAddOpen(false);
-        setCelebrationOpen(false);
-      });
-      const saveResult = writeLocalSnapshot(storageKey, emptySnapshot);
       setDataMode(
-        usesDeviceOnlyStorage()
-          ? saveResult === "failed"
-            ? "仅本次有效"
-            : "本机已保存"
-          : saveResult === "failed"
-            ? "部分已同步"
-            : "云端已同步",
+        deviceOnly
+          ? localCleared
+            ? "本机已保存"
+            : "仅本次有效"
+          : localCleared
+            ? "云端已同步"
+            : "部分已同步",
       );
-      setToast("个人资料已清除，衣橱现在是空的");
+      setToast(
+        localCleared
+          ? "个人资料已清除，衣橱现在是空的"
+          : deviceOnly
+            ? "页面中的资料已清空；浏览器阻止清除本机副本，请在网站数据设置中删除"
+            : "云端资料已清除；浏览器阻止清除本机副本，请在网站数据设置中删除",
+      );
     } catch {
-      setToast("资料还没有全部清除，请检查网络后重试");
+      setDataMode(deviceOnly ? (localCleared ? "本机已保存" : "仅本次有效") : "部分已同步");
+      setToast(
+        localCleared
+          ? "本机资料已清除；云端还没有全部清除，请检查网络后重试"
+          : "页面资料已清空，但本机副本和云端还没有全部清除，请检查设置与网络",
+      );
     } finally {
-      setClearingData(false);
+      flushSync(() => setClearingData(false));
+      window.requestAnimationFrame(() => {
+        const heading = mainRef.current?.querySelector<HTMLElement>("h1");
+        if (!heading) return;
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      });
     }
   }
 
   return (
-    <div className="site-shell">
+    <>
+      <div
+        className="site-shell"
+        aria-busy={clearingData}
+        inert={clearingData ? true : undefined}
+      >
       <header className="topbar">
         <button type="button" className="brand" disabled={!ready} onClick={() => navigate("home")} aria-label="回到松松逛首页">
           <span className="brand-mark" aria-hidden="true">松</span>
@@ -977,6 +1194,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <DailyView
             wardrobe={wardrobe}
             metrics={metrics}
+            preferences={dailyPreferences}
+            onPreferencesChange={(field, value) => {
+              setDailyPreferences((current) => ({ ...current, [field]: value }));
+              markLocalChange();
+            }}
             onApply={(selection) => {
               updateOutfit(selection);
               navigate("studio");
@@ -1021,7 +1243,13 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
-    </div>
+      </div>
+      {clearingData && (
+        <div className="data-clearing-status" role="status" aria-live="assertive">
+          <p><span aria-hidden="true" /> 正在安全清除个人资料，请稍候</p>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1333,11 +1561,20 @@ function BodySlider({ label, value, min, max, left, right, onChange }: { label: 
   return <label className="body-slider"><span><b>{label}</b><i>{value} cm</i></span><input type="range" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} /><small><i>{left}</i><i>{right}</i></small></label>;
 }
 
-function DailyView({ wardrobe, metrics, onApply }: { wardrobe: WardrobeItem[]; metrics: BodyMetrics; onApply: (selection: OutfitSelection) => void }) {
-  const [weather, setWeather] = useState("温和");
-  const [occasion, setOccasion] = useState("通勤");
-  const [feeling, setFeeling] = useState("轻松");
-  const [comfort, setComfort] = useState("方便走动");
+function DailyView({
+  wardrobe,
+  metrics,
+  preferences,
+  onPreferencesChange,
+  onApply,
+}: {
+  wardrobe: WardrobeItem[];
+  metrics: BodyMetrics;
+  preferences: DailyPreferences;
+  onPreferencesChange: (field: keyof DailyPreferences, value: string) => void;
+  onApply: (selection: OutfitSelection) => void;
+}) {
+  const { weather, occasion, feeling, comfort } = preferences;
   const [seed, setSeed] = useState(0);
   const occasionStyles: Record<string, string[]> = {
     通勤: ["利落", "轻松"],
@@ -1372,48 +1609,40 @@ function DailyView({ wardrobe, metrics, onApply }: { wardrobe: WardrobeItem[]; m
   const bottoms = ranked("下装");
   const dresses = ranked("连衣裙");
   const outers = ranked("外套");
-  const pick = (items: WardrobeItem[], offset: number) =>
-    items.length ? items[(seed + offset) % items.length] : undefined;
-  const candidates: OutfitSelection[] = Array.from({ length: 9 }, (_, index) => {
-    const outerwearId = (weather === "偏凉" || weather === "下雨" || comfort === "保暖")
-      ? pick(outers, index)?.id
-      : undefined;
-    if ((index % 3 === 2 || !tops.length || !bottoms.length) && dresses.length) {
-      return { dressId: pick(dresses, index)?.id, outerwearId };
-    }
-    return {
-      topId: pick(tops, index)?.id,
-      bottomId: pick(bottoms, index + 1)?.id,
-      outerwearId,
-    };
+  const needsOuterwear = weather === "偏凉" || weather === "下雨" || comfort === "保暖";
+  const scoredLooks = rankOutfitSelections({
+    tops,
+    bottoms,
+    dresses,
+    outers,
+    needsOuterwear,
+    scoreItem,
   });
-  const seenLooks = new Set<string>();
-  const suggestions = candidates.filter((selection) => {
-    if (!selection.dressId && !(selection.topId && selection.bottomId)) return false;
-    const key = [selection.topId, selection.bottomId, selection.dressId, selection.outerwearId]
-      .filter(Boolean)
-      .join("|");
-    if (!key || seenLooks.has(key)) return false;
-    seenLooks.add(key);
-    return true;
-  }).slice(0, 3);
+  const bestLook = scoredLooks[0];
+  const alternatives = scoredLooks.slice(1);
+  const alternativeOffset = alternatives.length ? seed % alternatives.length : 0;
+  const suggestions = [
+    bestLook,
+    alternatives[alternativeOffset],
+    alternatives.length > 1 ? alternatives[(alternativeOffset + 1) % alternatives.length] : undefined,
+  ].filter((look): look is NonNullable<typeof look> => Boolean(look));
   const names = [`${feeling}感${occasion}`, `${comfort}的一套`, "今天的衣橱惊喜"];
 
   return (
     <div className="page page--daily">
       <section className="daily-hero"><div><p className="eyebrow">TODAY&apos;S OUTFIT</p><h1>今天穿什么，交给衣橱。</h1><p>使用衣橱里的衣服生成最多三套建议；内置示例衣物会清楚标出，不会冒充你的衣服。</p></div><div className="daily-date"><span>{todayLabel()}</span><strong>{weather} · 22°C</strong><small>天气为体验示例，可手动选择</small></div></section>
       <section className="preference-panel">
-        <ChoiceGroup label="天气" options={["炎热", "温和", "偏凉", "下雨"]} value={weather} onChange={setWeather} />
-        <ChoiceGroup label="场景" options={["通勤", "上课", "约会", "运动", "宅家"]} value={occasion} onChange={setOccasion} />
-        <ChoiceGroup label="今天的感觉" options={["轻松", "利落", "温柔", "有点亮眼"]} value={feeling} onChange={setFeeling} />
-        <ChoiceGroup label="舒适偏好" options={["方便走动", "宽松", "不露肤", "保暖"]} value={comfort} onChange={setComfort} />
+        <ChoiceGroup label="天气" options={[...DAILY_OPTIONS.weather]} value={weather} onChange={(value) => onPreferencesChange("weather", value)} />
+        <ChoiceGroup label="场景" options={[...DAILY_OPTIONS.occasion]} value={occasion} onChange={(value) => onPreferencesChange("occasion", value)} />
+        <ChoiceGroup label="今天的感觉" options={[...DAILY_OPTIONS.feeling]} value={feeling} onChange={(value) => onPreferencesChange("feeling", value)} />
+        <ChoiceGroup label="舒适偏好" options={[...DAILY_OPTIONS.comfort]} value={comfort} onChange={(value) => onPreferencesChange("comfort", value)} />
         <button type="button" className="button button--primary" onClick={() => setSeed((current) => current + 1)}>✦ 换一组看看</button>
       </section>
       <div className="suggestion-heading"><div><span>从 {wardrobe.length} 件衣服中组合</span><h2>为现在的你准备了 {suggestions.length} 套</h2></div><p>身高 {metrics.height} cm · 偏好「{comfort}」</p></div>
       {suggestions.length ? <section className="suggestion-grid">
-        {suggestions.map((selection, index) => {
+        {suggestions.map(({ selection, key }, index) => {
           const items = wardrobe.filter((item) => [selection.topId, selection.bottomId, selection.dressId, selection.outerwearId].includes(item.id));
-          return <article className={`suggestion-card suggestion-card--${index + 1}`} key={`${seed}-${index}`}><div className="suggestion-number">0{index + 1}</div><div className="suggestion-visual">{items.map((item) => <div key={item.id} className="suggestion-piece"><MiniGarment item={item} /></div>)}</div><div className="suggestion-copy"><span className="suggestion-tag">{index === 0 ? "最符合今天" : index === 1 ? "换一种心情" : "衣橱惊喜"}</span><h2>{names[index]}</h2><p>{occasion}需要一点{feeling}感；{items.map((item) => item.colorName).join("、")}放在一起不会太用力，也符合“{comfort}”的偏好。</p><div className="suggestion-items">{items.map((item) => <span key={item.id}><i style={{ background: item.color }} />{item.name}</span>)}</div><div className="suggestion-actions"><button type="button" className="button button--dark" onClick={() => onApply(selection)}>穿上看看</button><button type="button" className="button button--soft" onClick={() => setSeed((current) => current + index + 1)}>换一件</button></div></div></article>;
+          return <article className={`suggestion-card suggestion-card--${index + 1}`} key={key}><div className="suggestion-number">0{index + 1}</div><div className="suggestion-visual">{items.map((item) => <div key={item.id} className="suggestion-piece"><MiniGarment item={item} /></div>)}</div><div className="suggestion-copy"><span className="suggestion-tag">{index === 0 ? "最符合今天" : index === 1 ? "换一种心情" : "衣橱惊喜"}</span><h2>{names[index]}</h2><p>{occasion}需要一点{feeling}感；{items.map((item) => item.colorName).join("、")}放在一起不会太用力，也符合“{comfort}”的偏好。</p><div className="suggestion-items">{items.map((item) => <span key={item.id}><i style={{ background: item.color }} />{item.name}</span>)}</div><div className="suggestion-actions"><button type="button" className="button button--dark" onClick={() => onApply(selection)}>穿上看看</button><button type="button" className="button button--soft" onClick={() => setSeed((current) => current + index + 1)}>{index === 0 ? "换一组" : "换一件"}</button></div></div></article>;
         })}
       </section> : <div className="empty-state"><span>◇</span><h2>还缺少可以组合的衣服</h2><p>先在衣橱加入上装与下装，或一件连衣裙，再回来生成搭配。</p></div>}
       <p className="daily-footnote">推荐来自你的现有衣橱与已选偏好，不评价身材，也不会建议为了搭配而购买新衣服。</p>
@@ -1482,6 +1711,7 @@ function AddGarmentDialog({
 
   function choosePhoto(file?: File) {
     setImportError("");
+    invalidateRecognizedMeasurements();
     if (
       file &&
       (!CLIENT_IMAGE_TYPES.has(file.type.toLowerCase()) ||
@@ -1502,7 +1732,24 @@ function AddGarmentDialog({
     setAnalysisMessage("");
   }
 
+  function invalidateRecognizedMeasurements() {
+    if (estimateTimer.current !== null) {
+      window.clearTimeout(estimateTimer.current);
+      estimateTimer.current = null;
+    }
+    const recognized = new Set(matchedMeasurements);
+    if (recognized.has("chest")) setChest("");
+    if (recognized.has("waist")) setWaist("");
+    if (recognized.has("hips")) setHips("");
+    if (recognized.has("length")) setLength("");
+    setMatchedMeasurements([]);
+    setAnalysisMessage("");
+    setAnalyzed(false);
+    setAnalyzing(false);
+  }
+
   function changeMode(nextMode: "photo" | "link" | "manual") {
+    if (nextMode === mode) return;
     if (mode === "photo" && nextMode !== "photo") {
       setPhoto(undefined);
       if (preview) URL.revokeObjectURL(preview);
@@ -1512,15 +1759,8 @@ function AddGarmentDialog({
       setSourceUrl("");
       setSizeChartText("");
     }
-    if (estimateTimer.current !== null) {
-      window.clearTimeout(estimateTimer.current);
-      estimateTimer.current = null;
-    }
-    setAnalyzing(false);
-    setAnalyzed(false);
+    invalidateRecognizedMeasurements();
     setImportError("");
-    setMatchedMeasurements([]);
-    setAnalysisMessage("");
     setMode(nextMode);
   }
 
@@ -1764,7 +2004,7 @@ function AddGarmentDialog({
                       required
                       onChange={(event) => {
                         setSourceUrl(event.target.value);
-                        setAnalyzed(false);
+                        invalidateRecognizedMeasurements();
                       }}
                     />
                   </div>
@@ -1777,7 +2017,7 @@ function AddGarmentDialog({
                     placeholder="例如：M 码 胸围 104 cm，腰围 86 cm，衣长 67 cm"
                     onChange={(event) => {
                       setSizeChartText(event.target.value);
-                      setAnalyzed(false);
+                      invalidateRecognizedMeasurements();
                     }}
                   />
                 </label>
