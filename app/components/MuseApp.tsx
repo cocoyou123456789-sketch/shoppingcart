@@ -9,6 +9,12 @@ import { extractGarmentMeasurements } from "../lib/garment-analysis.mjs";
 import { rankOutfitSelections } from "../lib/outfit-ranking.mjs";
 import { preservePersistedPhotos } from "../lib/device-storage.mjs";
 import {
+  avatarOutfitFromSelection,
+  createVirtualWardrobeItem,
+  supportsAvatarTryOn,
+  wearWardrobeItem,
+} from "../lib/try-on-state.mjs";
+import {
   clearMutationAction,
   clearMarkerStorageKey,
   compareClearSignals,
@@ -162,12 +168,6 @@ const SKIN_TONES = [
   ["#684235", "深棕色"],
 ] as const;
 
-const AVATAR_CATEGORIES = new Set<ShopCategory>(["上装", "下装", "连衣裙", "外套"]);
-
-function supportsAvatarTryOn(category: ShopCategory) {
-  return AVATAR_CATEGORIES.has(category);
-}
-
 function colorNameFromHex(color: string) {
   const names: Record<string, string> = {
     "#d7dff0": "雾霾蓝",
@@ -205,42 +205,6 @@ function MiniGarment({ item }: { item: Pick<WardrobeItem, "category" | "color"> 
               ? "bag"
               : "shirt";
   return <ProductVisual visual={visual} color={item.color} />;
-}
-
-function outfitGarments(outfit: OutfitSelection, wardrobe: WardrobeItem[]): AvatarOutfit {
-  const findGarment = (id?: string) => {
-    const item = wardrobe.find((candidate) => candidate.id === id);
-    if (!item) return undefined;
-    return {
-      color: item.color,
-      chest: item.chest,
-      waist: item.waist,
-      hips: item.hips,
-      length: item.length,
-    };
-  };
-  return {
-    top: findGarment(outfit.topId),
-    bottom: findGarment(outfit.bottomId),
-    dress: findGarment(outfit.dressId),
-    outerwear: findGarment(outfit.outerwearId),
-  };
-}
-
-function createItemFromProduct(product: Product): WardrobeItem | null {
-  if (!["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"].includes(product.category)) return null;
-  return {
-    id: `virtual-${product.id}`,
-    name: product.name,
-    category: product.category as ClosetCategory,
-    color: product.color,
-    colorName: product.colorName,
-    size: "M",
-    source: "虚拟商品",
-    season: product.season,
-    style: product.style,
-    confidence: "待确认",
-  };
 }
 
 function todayLabel() {
@@ -1375,7 +1339,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     return () => window.cancelAnimationFrame(frame);
   }, [ready, view]);
 
-  const avatarOutfit = useMemo(() => outfitGarments(outfit, wardrobe), [outfit, wardrobe]);
+  const avatarOutfit = useMemo(
+    () => avatarOutfitFromSelection(outfit, wardrobe) as AvatarOutfit,
+    [outfit, wardrobe],
+  );
 
   function navigate(next: View) {
     setView(next);
@@ -1433,7 +1400,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   function tryProduct(product: Product) {
-    const item = createItemFromProduct(product);
+    const item = createVirtualWardrobeItem(product) as WardrobeItem | null;
     if (!item) {
       setToast("这类商品可以放进虚拟购物袋，当前不提供虚假的试用效果");
       return;
@@ -1454,13 +1421,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   function wearItem(item: WardrobeItem) {
-    updateOutfit((current) => {
-      if (item.category === "上装") return { ...current, topId: item.id, dressId: undefined };
-      if (item.category === "下装") return { ...current, bottomId: item.id, dressId: undefined };
-      if (item.category === "连衣裙") return { dressId: item.id, outerwearId: current.outerwearId };
-      if (item.category === "外套") return { ...current, outerwearId: item.id };
-      return current;
-    });
+    updateOutfit((current) => wearWardrobeItem(current, item));
   }
 
   async function deleteWardrobeItem(item: WardrobeItem) {
@@ -1548,7 +1509,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   function checkout() {
-    const wearable = cart.map(createItemFromProduct).filter(Boolean) as WardrobeItem[];
+    const wearable = cart.map(createVirtualWardrobeItem).filter(Boolean) as WardrobeItem[];
     const newWearable = wearable.filter(
       (item) => !wardrobe.some((entry) => entry.id === item.id),
     );
@@ -2194,8 +2155,8 @@ function ShopView({
               <p className="product-meta"><span>{product.category}</span><i style={{ background: product.color }} /> {product.colorName}</p>
               <h2>{product.name}</h2><p>{product.subtitle}</p>
               <div className="product-bottom"><strong><small>虚拟价</small> {product.points} 松松币</strong><span>不会扣款</span></div>
-              <div className={`product-actions ${createItemFromProduct(product) ? "" : "product-actions--single"}`}>
-                {createItemFromProduct(product) && (
+              <div className={`product-actions ${createVirtualWardrobeItem(product) ? "" : "product-actions--single"}`}>
+                {createVirtualWardrobeItem(product) && (
                   <button type="button" className="button button--soft" onClick={() => onTry(product)}>
                     {supportsAvatarTryOn(product.category) ? "试穿看看" : "收入衣橱"}
                   </button>
@@ -2294,8 +2255,13 @@ function StudioView({
   const [closetCategory, setClosetCategory] = useState<(typeof STUDIO_CATEGORIES)[number]>("全部");
   const previewableWardrobe = wardrobe.filter((item) => supportsAvatarTryOn(item.category));
   const visible = previewableWardrobe.filter((item) => closetCategory === "全部" || item.category === closetCategory);
-  const selectedIds = [outfit.topId, outfit.bottomId, outfit.dressId, outfit.outerwearId].filter(Boolean);
-  const selected = wardrobe.filter((item) => selectedIds.includes(item.id));
+  const selected = wardrobe.filter((item) =>
+    (item.category === "上装" && item.id === outfit.topId) ||
+    (item.category === "下装" && item.id === outfit.bottomId) ||
+    (item.category === "连衣裙" && item.id === outfit.dressId) ||
+    (item.category === "外套" && item.id === outfit.outerwearId),
+  );
+  const selectedIds = selected.map((item) => item.id);
   const fitItem = selected.find((item) => item.category === "上装" || item.category === "连衣裙");
   const ease = fitItem?.chest ? fitItem.chest - metrics.chest : null;
   const fitLabel = ease === null ? "信息不足" : ease < 3 ? "可能偏贴身" : ease < 12 ? "常规松量" : "可能偏宽松";
@@ -2476,13 +2442,18 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
   const total = cart.reduce((sum, item) => sum + item.points, 0);
   const dialogRef = useDialogAccessibility<HTMLElement>(onClose, returnFocusRef);
   const cartListRef = useRef<HTMLDivElement>(null);
+  const [removalStatus, setRemovalStatus] = useState("");
 
   function removeAndRestoreFocus(
     index: number,
     event: React.MouseEvent<HTMLButtonElement>,
   ) {
     const button = event.currentTarget;
+    const removedItem = cart[index];
     onRemove(index);
+    if (removedItem) {
+      setRemovalStatus(`${removedItem.name}已从购物袋移除，还剩 ${cart.length - 1} 件。`);
+    }
     window.requestAnimationFrame(() => {
       if (button.isConnected) return;
       const remainingButtons = Array.from(
@@ -2501,7 +2472,7 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
           <div><p>VIRTUAL BAG</p><h2 id="cart-title" tabIndex={-1}>虚拟购物袋 <span>{cart.length}</span></h2></div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭购物袋">×</button>
         </div>
-        <div className="payment-reassurance"><span aria-hidden="true">♡</span><p><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div>
+        <div className="payment-reassurance"><span aria-hidden="true">♡</span><p id="cart-payment-note"><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div>
         <div ref={cartListRef} className="cart-list">
           {cart.length ? cart.map((item, index) => (
             <article key={`${item.id}-${index}`}>
@@ -2513,7 +2484,8 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
             <div className="cart-empty"><span aria-hidden="true">▢</span><h3>袋子还是轻轻的</h3><p>看到喜欢的再放进来，不急。</p></div>
           )}
         </div>
-        <div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout}>完成这次虚拟购物</button><small>点击只会完成体验，不会提交付款或真实订单。</small></div>
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{removalStatus}</p>
+        <div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout} aria-describedby="cart-payment-note cart-checkout-note">完成这次虚拟购物</button><small id="cart-checkout-note">点击只会完成体验，不会提交付款或真实订单。</small></div>
       </aside>
     </div>
   );
@@ -2778,7 +2750,7 @@ function AddGarmentDialog({
             onKeyDown={handleModeKeyDown}
             onClick={() => changeMode("photo")}
           >
-            <span>▣</span>拍照录入
+            <span aria-hidden="true">▣</span>拍照录入
           </button>
           <button
             id="add-mode-link"
@@ -2791,7 +2763,7 @@ function AddGarmentDialog({
             onKeyDown={handleModeKeyDown}
             onClick={() => changeMode("link")}
           >
-            <span>↗</span>购买链接
+            <span aria-hidden="true">↗</span>购买链接
           </button>
           <button
             id="add-mode-manual"
@@ -2804,7 +2776,7 @@ function AddGarmentDialog({
             onKeyDown={handleModeKeyDown}
             onClick={() => changeMode("manual")}
           >
-            <span>⌨</span>手动录入
+            <span aria-hidden="true">⌨</span>手动录入
           </button>
         </div>
         <form
@@ -2816,6 +2788,7 @@ function AddGarmentDialog({
             id="add-mode-panel"
             role="tabpanel"
             aria-labelledby={`add-mode-${mode}`}
+            aria-busy={analyzing}
             className="add-dialog-body"
           >
             {mode === "photo" && (
@@ -2827,13 +2800,14 @@ function AddGarmentDialog({
                     <img src={preview} alt="待录入衣物预览" />
                   ) : (
                     <>
-                      <span>＋</span>
+                      <span aria-hidden="true">＋</span>
                       <strong>上传衣物正面照</strong>
                       <small>点击选择或直接拍照</small>
                     </>
                   )}
                   <input
                     type="file"
+                    aria-label="上传或更换衣物正面照"
                     accept="image/jpeg,image/png,image/webp"
                     capture="environment"
                     aria-invalid={importError ? true : undefined}
@@ -3066,7 +3040,7 @@ function AddGarmentDialog({
                 </label>
               </div>
               {analyzed && (
-                <div className="analysis-result" role="status" aria-live="polite">
+                <div className="analysis-result" role="status" aria-live="polite" aria-atomic="true">
                   <div>
                     <span>记录状态</span>
                     <b>

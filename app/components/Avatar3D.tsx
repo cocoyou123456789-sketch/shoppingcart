@@ -470,8 +470,11 @@ export function Avatar3D({
   const focusOnReadyRef = useRef(focusOnReady);
   const [cameraView, setCameraView] = useState<CameraView>("angle");
   const [zoomLevel, setZoomLevel] = useState(100);
+  const zoomLevelRef = useRef(100);
   const [announcedZoomLevel, setAnnouncedZoomLevel] = useState(100);
-  const [renderFailed, setRenderFailed] = useState(false);
+  const [renderStatus, setRenderStatus] = useState<"initializing" | "ready" | "failed">(
+    "initializing",
+  );
   const [retryVersion, setRetryVersion] = useState(0);
   const cameraViewRef = useRef<CameraView>("angle");
   const sceneInput = useDebouncedAvatarInput(metrics, outfit, 180);
@@ -498,6 +501,7 @@ export function Avatar3D({
     const mount = mountRef.current;
     if (!mount) return;
 
+    const initialize = () => {
     const cleanups: Array<() => void> = [];
     let runtime: SceneRuntime | null = null;
     let tornDown = false;
@@ -628,7 +632,7 @@ export function Avatar3D({
     const failRendering = () => {
       if (rendererFailed) return;
       rendererFailed = true;
-      setRenderFailed(true);
+      setRenderStatus("failed");
       teardown();
     };
     const renderFrame = (timestamp = performance.now()) => {
@@ -653,7 +657,10 @@ export function Avatar3D({
         CAMERA_DEFAULT_DISTANCES[cameraViewRef.current],
         controls.getDistance(),
       );
-      setZoomLevel((current) => current === nextZoomLevel ? current : nextZoomLevel);
+      if (zoomLevelRef.current !== nextZoomLevel) {
+        zoomLevelRef.current = nextZoomLevel;
+        setZoomLevel(nextZoomLevel);
+      }
       if (!rendering && !controls.autoRotate && !animationFrame && !animationTimer) renderFrame();
     };
     controls.addEventListener("change", handleControlsChange);
@@ -868,18 +875,7 @@ export function Avatar3D({
     if (renderFrame()) {
       renderer.shadowMap.autoUpdate = false;
       const successTimer = window.setTimeout(() => {
-        setRenderFailed(false);
-        if (focusOnReadyRef.current) {
-          focusOnReadyRef.current = false;
-          const focusFrame = window.requestAnimationFrame(() => {
-            if (document.activeElement === document.body) {
-              viewSwitcherRef.current
-                ?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')
-                ?.focus();
-            }
-          });
-          cleanups.push(() => window.cancelAnimationFrame(focusFrame));
-        }
+        if (!tornDown && runtimeRef.current === runtime) setRenderStatus("ready");
       }, 0);
       cleanups.push(() => window.clearTimeout(successTimer));
       startAnimation();
@@ -889,12 +885,22 @@ export function Avatar3D({
     return teardown;
     } catch {
       teardown();
-      const failureTimer = window.setTimeout(() => setRenderFailed(true), 0);
+      const failureTimer = window.setTimeout(() => setRenderStatus("failed"), 0);
       return () => {
         window.clearTimeout(failureTimer);
         teardown();
       };
     }
+    };
+
+    let runtimeCleanup: (() => void) | undefined;
+    const initializationFrame = window.requestAnimationFrame(() => {
+      runtimeCleanup = initialize();
+    });
+    return () => {
+      window.cancelAnimationFrame(initializationFrame);
+      runtimeCleanup?.();
+    };
   }, [retryVersion]);
 
   useEffect(() => {
@@ -965,8 +971,12 @@ export function Avatar3D({
   );
 
   useEffect(() => {
-    if (renderFailed || !focusAfterRetryRef.current) return;
+    if (
+      renderStatus !== "ready" ||
+      (!focusAfterRetryRef.current && !focusOnReadyRef.current)
+    ) return;
     focusAfterRetryRef.current = false;
+    focusOnReadyRef.current = false;
     const frame = window.requestAnimationFrame(() => {
       if (document.activeElement === document.body) {
         viewSwitcherRef.current
@@ -975,11 +985,14 @@ export function Avatar3D({
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [renderFailed]);
+  }, [renderStatus]);
+
+  const renderReady = renderStatus === "ready";
+  const renderFailed = renderStatus === "failed";
 
   return (
     <div className={`avatar-stage ${compact ? "avatar-stage--compact" : ""}`}>
-      <div ref={mountRef} className={`avatar-canvas ${renderFailed ? "avatar-canvas--hidden" : ""}`} />
+      <div ref={mountRef} className={`avatar-canvas ${renderReady ? "" : "avatar-canvas--hidden"}`} />
       <div className="avatar-glow" aria-hidden="true" />
       {renderFailed ? (
         <div className="avatar-unavailable" role="status">
@@ -991,11 +1004,17 @@ export function Avatar3D({
             className="button button--soft"
             onClick={() => {
               focusAfterRetryRef.current = true;
+              setRenderStatus("initializing");
               setRetryVersion((current) => current + 1);
             }}
           >
             重试 3D
           </button>
+        </div>
+      ) : !renderReady ? (
+        <div className="avatar-loading" role="status">
+          <span aria-hidden="true" />
+          <p>正在启动三维预览…</p>
         </div>
       ) : <><div ref={viewSwitcherRef} className="view-switcher" role="group" aria-label="三维分身已加载，可切换视角和缩放" tabIndex={-1}>
         {(
@@ -1039,7 +1058,7 @@ export function Avatar3D({
           ＋
         </button>
       </div>
-      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">三维分身缩放 {announcedZoomLevel}%</span>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">三维分身已加载，当前缩放 {announcedZoomLevel}%</span>
       <p className="avatar-hint">拖动旋转 · 滚轮缩放 · 按钮支持键盘切换与缩放</p></>}
     </div>
   );

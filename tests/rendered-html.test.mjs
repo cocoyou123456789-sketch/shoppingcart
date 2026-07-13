@@ -86,6 +86,16 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /invalidateRecognizedMeasurements/);
   assert.match(app, /dailyPreferences/);
   assert.match(app, /rankOutfitSelections/);
+  assert.match(app, /avatarOutfitFromSelection\(outfit, wardrobe\)/);
+  assert.match(app, /updateOutfit\(\(current\) => wearWardrobeItem\(current, item\)\)/);
+  assert.match(app, /item\.category === "上装" && item\.id === outfit\.topId/);
+  assert.match(app, /const selectedIds = selected\.map\(\(item\) => item\.id\)/);
+  assert.match(
+    app,
+    /onApply=\{\(selection\) => \{\s*updateOutfit\(selection\);\s*navigate\("studio"\);/,
+  );
+  assert.match(app, /<DeferredAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact \/>/);
+  assert.match(app, /<DeferredAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} priority \/>/);
   assert.match(app, /pendingMutations\.map\(\(mutation\) => mutation\.promise\)/);
   assert.match(app, /CLOUD_MUTATION_TIMEOUT_MS/);
   assert.match(app, /CLOUD_UPLOAD_TIMEOUT_MS/);
@@ -131,7 +141,23 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /controls\.dollyIn\(AVATAR_ZOOM_SCALE\)/);
   assert.match(avatar, /controls\.dollyOut\(AVATAR_ZOOM_SCALE\)/);
   assert.match(avatar, /AVATAR_ZOOM_ANNOUNCE_DELAY_MS = 200/);
-  assert.match(avatar, /三维分身缩放 \{announcedZoomLevel\}%/);
+  assert.match(avatar, /三维分身已加载，当前缩放 \{announcedZoomLevel\}%/);
+  assert.match(
+    avatar,
+    /useState<"initializing" \| "ready" \| "failed">\(\s*"initializing"/,
+  );
+  assert.match(
+    avatar,
+    /if \(renderFrame\(\)\) \{[\s\S]*?runtimeRef\.current === runtime\) setRenderStatus\("ready"\)/,
+  );
+  assert.match(
+    avatar,
+    /const initializationFrame = window\.requestAnimationFrame\([\s\S]*?window\.cancelAnimationFrame\(initializationFrame\)/,
+  );
+  assert.match(
+    avatar,
+    /const renderReady = renderStatus === "ready";[\s\S]*?!renderReady \?[\s\S]*?正在启动三维预览[\s\S]*?aria-label="三维分身已加载/,
+  );
   assert.match(avatar, /const armGeo = new CapsuleGeometry/);
   assert.doesNotMatch(avatar, /armGeo\.clone\(\)|legGeo\.clone\(\)/);
   assert.match(app, /aria-labelledby="studio-closet-title"/);
@@ -148,6 +174,12 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(deferredAvatar, /saveData/);
   assert.match(deferredAvatar, /AvatarErrorBoundary/);
   assert.match(deferredAvatar, /catch\(\(\) =>/);
+  assert.match(deferredAvatar, /setForceLoad\(true\)/);
+  assert.match(app, /aria-label="上传或更换衣物正面照"/);
+  assert.match(app, /role="tabpanel"[\s\S]*?aria-busy=\{analyzing\}/);
+  assert.match(app, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
+  assert.match(app, /role="status" aria-live="polite" aria-atomic="true">\{removalStatus\}/);
+  assert.match(app, /aria-describedby="cart-payment-note cart-checkout-note"/);
   assert.match(wardrobeRoute, /datetime\('now', '-10 minutes'\)/);
   assert.match(wardrobeRoute, /ALLOWED_IMAGE_TYPES/);
   assert.match(wardrobeRoute, /db\.batch/);
@@ -169,6 +201,10 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(personalDataRoute, /DELETE FROM wardrobe_items/);
   assert.match(styles, /\.save-button, \.icon-button, \.cart-list article > button \{ min-width: 44px; \}/);
   assert.match(styles, /\.choice-group legend[\s\S]*font-size: 12px;/);
+  assert.match(styles, /\.upload-zone:focus-within/);
+  assert.match(styles, /\.daily-date small \{[\s\S]*?font-size: 10px;/);
+  assert.match(styles, /\.drawer-footer > small \{[\s\S]*?font-size: 11px;/);
+  assert.match(styles, /\.measurement-grid > label > span \{[\s\S]*?font-size: 10px;/);
   assert.match(styles, /@media \(pointer: coarse\)/);
   assert.match(styles, /\.skip-link:focus/);
   assert.match(hosting, /"d1": "DB"/);
@@ -212,17 +248,22 @@ test("critical secondary text colors meet WCAG AA contrast", async () => {
   const fitResult = styles.match(
     /\.fit-readout b \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
   )?.[1];
+  const recognitionBadge = styles.match(
+    /\.form-section-title span \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
+  )?.[1];
   assert.ok(muted);
   assert.ok(pathCopy);
   assert.ok(studioDisclaimer);
   assert.ok(fitCopy);
   assert.ok(fitResult);
+  assert.ok(recognitionBadge);
   assert.ok(contrastRatio(muted, "#e5e9e1") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#e7c7bb") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#cbc7dd") >= 4.5);
   assert.ok(contrastRatio(studioDisclaimer, "#eee8df") >= 4.5);
   assert.ok(contrastRatio(fitCopy, "#e7eae3") >= 4.5);
   assert.ok(contrastRatio(fitResult, "#e7eae3") >= 4.5);
+  assert.ok(contrastRatio(recognitionBadge, "#eee3cf") >= 4.5);
 });
 
 test("rejects anonymous reads and writes to private wardrobe APIs", async () => {

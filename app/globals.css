@@ -2269,7 +2269,7 @@ input[type="range"] {
 
 .daily-date small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .preference-panel {
@@ -2292,7 +2292,7 @@ input[type="range"] {
 
 .choice-group legend {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   margin-bottom: 8px;
 }
 
@@ -2308,7 +2308,7 @@ input[type="range"] {
   border: 1px solid transparent;
   border-radius: 999px;
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 11px;
   padding: 7px 9px;
 }
 
@@ -2395,7 +2395,7 @@ input[type="range"] {
   border-radius: 999px;
   color: var(--coral-dark);
   display: inline-block;
-  font-size: 8px;
+  font-size: 10px;
   padding: 5px 8px;
 }
 
@@ -2408,7 +2408,7 @@ input[type="range"] {
 
 .suggestion-copy > p {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.7;
   min-height: 52px;
 }
@@ -2427,7 +2427,7 @@ input[type="range"] {
   align-items: center;
   color: #5d5755;
   display: flex;
-  font-size: 9px;
+  font-size: 11px;
   gap: 7px;
 }
 
@@ -2444,14 +2444,14 @@ input[type="range"] {
 }
 
 .suggestion-actions .button {
-  font-size: 10px;
+  font-size: 11px;
   min-height: 38px;
   padding: 0 10px;
 }
 
 .daily-footnote {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   margin-top: 24px;
   text-align: center;
 }
@@ -2552,13 +2552,13 @@ input[type="range"] {
   color: var(--muted);
   display: flex;
   flex-direction: column;
-  font-size: 9px;
+  font-size: 11px;
   gap: 2px;
 }
 
 .payment-reassurance strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .cart-list {
@@ -2576,7 +2576,7 @@ input[type="range"] {
   border-radius: 15px;
   display: grid;
   gap: 12px;
-  grid-template-columns: 68px 1fr 24px;
+  grid-template-columns: 68px 1fr 32px;
   padding: 8px;
 }
 
@@ -2589,7 +2589,7 @@ input[type="range"] {
 
 .cart-list article span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .cart-list article h3 {
@@ -2601,13 +2601,15 @@ input[type="range"] {
 
 .cart-list article p {
   color: var(--coral-dark);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .cart-list article > button {
   background: transparent;
   color: var(--muted);
   font-size: 16px;
+  min-height: 32px;
+  min-width: 32px;
 }
 
 .cart-empty {
@@ -2659,7 +2661,7 @@ input[type="range"] {
 .drawer-footer > small {
   color: var(--muted);
   display: block;
-  font-size: 8px;
+  font-size: 11px;
   margin-top: 8px;
   text-align: center;
 }
@@ -2753,7 +2755,7 @@ input[type="range"] {
 
 .upload-zone small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   margin-top: 4px;
 }
 
@@ -2778,19 +2780,19 @@ input[type="range"] {
   color: var(--muted);
   display: flex;
   flex-direction: column;
-  font-size: 8px;
+  font-size: 10px;
   gap: 2px;
   line-height: 1.55;
 }
 
 .photo-tip strong {
   color: var(--ink);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .photo-import .button,
 .link-import .button {
-  font-size: 9px;
+  font-size: 11px;
   min-height: 36px;
 }
 
@@ -2799,7 +2801,7 @@ input[type="range"] {
 .field > span {
   color: var(--muted);
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   margin-bottom: 6px;
 }
 
@@ -2870,7 +2872,7 @@ input[type="range"] {
 
 .inline-note {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
   line-height: 1.5;
   margin-top: 10px;
 }
@@ -2891,8 +2893,8 @@ input[type="range"] {
 .form-section-title span {
   background: #eee3cf;
   border-radius: 999px;
-  color: #7d6a45;
-  font-size: 8px;
+  color: #705c37;
+  font-size: 10px;
   padding: 5px 7px;
 }
 
@@ -2935,7 +2937,7 @@ input[type="range"] {
 }
 
 .color-field b {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   margin-left: 6px;
 }
@@ -2950,7 +2952,7 @@ input[type="range"] {
 .measurement-grid > label > span {
   color: var(--muted);
   display: block;
-  font-size: 8px;
+  font-size: 10px;
   margin-bottom: 5px;
 }
 
@@ -2974,7 +2976,7 @@ input[type="range"] {
 
 .measurement-grid b {
   color: var(--muted);
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 500;
 }
 
@@ -2994,7 +2996,11 @@ input[type="range"] {
 .analysis-result span,
 .analysis-result b,
 .analysis-result p {
-  font-size: 8px;
+  font-size: 10px;
+}
+
+.analysis-result b {
+  font-size: 11px;
 }
 
 .analysis-result span,

@@ -15,6 +15,10 @@ test("avatar loading policy protects slow networks while preserving user overrid
     avatarLoadPolicy({ forceLoad: true, saveData: true, effectiveType: "slow-2g" }),
     { mode: "immediate", reason: null, delayMs: 0 },
   );
+  assert.deepEqual(
+    avatarLoadPolicy({ forceLoad: true, deviceMemory: 1, hardwareConcurrency: 1 }),
+    { mode: "immediate", reason: null, delayMs: 0 },
+  );
 });
 
 test("resource-constrained devices keep home 3D opt-in but load the studio", () => {
