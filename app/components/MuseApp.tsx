@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 import { DeferredAvatar } from "./DeferredAvatar";
+import { extractGarmentMeasurements } from "../lib/garment-analysis.mjs";
 import {
   BODY_PRESETS,
   PRODUCTS,
@@ -98,6 +99,16 @@ const STUDIO_CATEGORIES: ("全部" | "上装" | "下装" | "连衣裙" | "外套
 
 const SEASON_OPTIONS = ["四季", "春夏", "春秋"] as const;
 const STYLE_OPTIONS = ["轻松", "利落", "温柔", "有点亮眼"] as const;
+const CLIENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_CLIENT_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_WARDROBE_ITEMS = 200;
+const SKIN_TONES = [
+  ["#f2d4bd", "浅暖色"],
+  ["#dfb08d", "暖米色"],
+  ["#c98e68", "蜜糖色"],
+  ["#9d654a", "深暖色"],
+  ["#684235", "深棕色"],
+] as const;
 
 const AVATAR_CATEGORIES = new Set<ShopCategory>(["上装", "下装", "连衣裙", "外套"]);
 
@@ -144,13 +155,23 @@ function MiniGarment({ item }: { item: Pick<WardrobeItem, "category" | "color"> 
   return <ProductVisual visual={visual} color={item.color} />;
 }
 
-function outfitColors(outfit: OutfitSelection, wardrobe: WardrobeItem[]): AvatarOutfit {
-  const findColor = (id?: string) => wardrobe.find((item) => item.id === id)?.color;
+function outfitGarments(outfit: OutfitSelection, wardrobe: WardrobeItem[]): AvatarOutfit {
+  const findGarment = (id?: string) => {
+    const item = wardrobe.find((candidate) => candidate.id === id);
+    if (!item) return undefined;
+    return {
+      color: item.color,
+      chest: item.chest,
+      waist: item.waist,
+      hips: item.hips,
+      length: item.length,
+    };
+  };
   return {
-    top: findColor(outfit.topId),
-    bottom: findColor(outfit.bottomId),
-    dress: findColor(outfit.dressId),
-    outerwear: findColor(outfit.outerwearId),
+    top: findGarment(outfit.topId),
+    bottom: findGarment(outfit.bottomId),
+    dress: findGarment(outfit.dressId),
+    outerwear: findGarment(outfit.outerwearId),
   };
 }
 
@@ -404,6 +425,8 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const [toast, setToast] = useState("");
   const [mood, setMood] = useState(62);
   const [dataMode, setDataMode] = useState<DataMode>("连接中");
+  const [ready, setReady] = useState(false);
+  const [clearingData, setClearingData] = useState(false);
   const hydrated = useRef(false);
   const storageWarningShown = useRef(false);
   const storageFailureShown = useRef(false);
@@ -453,6 +476,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       }
       setDataMode("本机已保存");
       hydrated.current = true;
+      setReady(true);
     };
 
     if (usesDeviceOnlyStorage()) {
@@ -512,6 +536,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       const successCount = Number(closetResult.status === "fulfilled") + Number(profileResult.status === "fulfilled");
       setDataMode(successCount === 2 ? "云端已同步" : successCount === 1 ? "部分已同步" : "本机已保存");
       hydrated.current = true;
+      setReady(true);
     });
     return () => {
       cancelled = true;
@@ -524,14 +549,19 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     if (!hydrated.current || dataMode === "连接中") return;
     const timer = window.setTimeout(() => {
       const result = writeLocalSnapshot(storageKey, latestSnapshot.current);
-      if (result === "failed" && !storageFailureShown.current) {
-        storageFailureShown.current = true;
+      if (result === "failed") {
         if (dataMode === "云端已同步" || dataMode === "部分已同步") {
           setDataMode("部分已同步");
-          setToast("云端衣橱仍安全，但本机搭配偏好这次没有保存");
         } else if (dataMode !== "仅本次有效") {
           setDataMode("仅本次有效");
-          setToast("浏览器阻止了本机保存，本次内容仍会保留到页面关闭");
+        }
+        if (!storageFailureShown.current) {
+          storageFailureShown.current = true;
+          setToast(
+            dataMode === "云端已同步" || dataMode === "部分已同步"
+              ? "云端衣橱仍安全，但本机搭配偏好这次没有保存"
+              : "浏览器阻止了本机保存，本次内容仍会保留到页面关闭",
+          );
         }
       } else if (result === "metadata-only" && !storageWarningShown.current) {
         storageWarningShown.current = true;
@@ -563,6 +593,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }, [toast]);
 
   useEffect(() => {
+    if (!ready) return;
     if (previousView.current === view) return;
     previousView.current = view;
     const frame = window.requestAnimationFrame(() => {
@@ -572,9 +603,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       heading.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [view]);
+  }, [ready, view]);
 
-  const avatarOutfit = useMemo(() => outfitColors(outfit, wardrobe), [outfit, wardrobe]);
+  const avatarOutfit = useMemo(() => outfitGarments(outfit, wardrobe), [outfit, wardrobe]);
 
   function navigate(next: View) {
     setView(next);
@@ -584,10 +615,22 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
 
   function markLocalChange() {
     setDataMode((current) =>
-      current === "云端已同步" || current === "部分已同步"
+      current === "仅本次有效"
+        ? current
+        : current === "云端已同步" || current === "部分已同步"
         ? "部分已同步"
         : "本机已保存",
     );
+  }
+
+  function updateMetrics(action: React.SetStateAction<BodyMetrics>) {
+    setMetrics(action);
+    markLocalChange();
+  }
+
+  function updateOutfit(action: React.SetStateAction<OutfitSelection>) {
+    setOutfit(action);
+    markLocalChange();
   }
 
   function addToCart(product: Product) {
@@ -625,6 +668,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
       setToast("这类商品可以放进虚拟购物袋，当前不提供虚假的试用效果");
       return;
     }
+    if (!wardrobe.some((entry) => entry.id === item.id) && wardrobe.length >= MAX_WARDROBE_ITEMS) {
+      setToast(`衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件再收入`);
+      return;
+    }
     setWardrobe((current) => (current.some((entry) => entry.id === item.id) ? current : [item, ...current]));
     markLocalChange();
     if (!supportsAvatarTryOn(product.category)) {
@@ -637,7 +684,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   function wearItem(item: WardrobeItem) {
-    setOutfit((current) => {
+    updateOutfit((current) => {
       if (item.category === "上装") return { ...current, topId: item.id, dressId: undefined };
       if (item.category === "下装") return { ...current, bottomId: item.id, dressId: undefined };
       if (item.category === "连衣裙") return { dressId: item.id, outerwearId: current.outerwearId };
@@ -681,6 +728,13 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
 
   function checkout() {
     const wearable = cart.map(createItemFromProduct).filter(Boolean) as WardrobeItem[];
+    const newWearable = wearable.filter(
+      (item) => !wardrobe.some((entry) => entry.id === item.id),
+    );
+    if (wardrobe.length + newWearable.length > MAX_WARDROBE_ITEMS) {
+      setToast(`衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一些衣物再完成`);
+      return;
+    }
     setWardrobe((current) => mergeWardrobe(wearable, current));
     setSavedProductIds((current) => [...new Set([...current, ...cart.map((item) => item.id)])]);
     markLocalChange();
@@ -713,6 +767,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   }
 
   async function addWardrobeItem(item: WardrobeItem, photo?: File) {
+    if (wardrobe.length >= MAX_WARDROBE_ITEMS) {
+      setToast(`衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件再添加`);
+      return;
+    }
     const addToDevice = async () => {
       const deviceImage = await photoToDeviceImage(photo);
       const localItem = { ...item, imageUrl: deviceImage };
@@ -735,6 +793,10 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         });
         if (photo) form.append("photo", photo);
         const response = await fetch("/api/wardrobe", { method: "POST", body: form });
+        if (response.status === 409) {
+          setToast(`云端衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件`);
+          return;
+        }
         if (!response.ok) throw new Error();
         const data = (await response.json()) as { item: WardrobeItem };
         cloudItemIds.current.add(data.item.id);
@@ -752,10 +814,76 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     );
   }
 
+  async function clearPersonalData() {
+    if (clearingData) return;
+    const confirmed = window.confirm(
+      "确定清除衣橱、身体参数、搭配、收藏和虚拟购物袋吗？登录版也会清除云端资料。这个操作不能撤销。",
+    );
+    if (!confirmed) return;
+    setClearingData(true);
+    try {
+      if (!usesDeviceOnlyStorage()) {
+        const wardrobeResponse = await fetch("/api/wardrobe?scope=all", {
+          method: "DELETE",
+        });
+        if (!wardrobeResponse.ok) throw new Error("wardrobe deletion failed");
+        const profileResponse = await fetch("/api/profile", { method: "DELETE" });
+        if (!profileResponse.ok) throw new Error("profile deletion failed");
+      }
+
+      const emptySnapshot: Omit<LocalSnapshot, "version" | "updatedAt"> = {
+        wardrobe: [],
+        metrics: DEFAULT_METRICS,
+        outfit: {},
+        mood: 62,
+        cartProductIds: [],
+        savedProductIds: [],
+        cloudItemIds: [],
+      };
+      try {
+        window.localStorage.removeItem(storageKey);
+        if (storageKey !== LOCAL_SNAPSHOT_KEY) {
+          window.localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
+        }
+      } catch {
+        // The empty overwrite below is still attempted when storage access is limited.
+      }
+      cloudItemIds.current.clear();
+      cartProductIds.current.clear();
+      latestSnapshot.current = emptySnapshot;
+      flushSync(() => {
+        setWardrobe([]);
+        setMetrics(DEFAULT_METRICS);
+        setOutfit({});
+        setMood(62);
+        setCart([]);
+        setSavedProductIds([]);
+        setCartOpen(false);
+        setAddOpen(false);
+        setCelebrationOpen(false);
+      });
+      const saveResult = writeLocalSnapshot(storageKey, emptySnapshot);
+      setDataMode(
+        usesDeviceOnlyStorage()
+          ? saveResult === "failed"
+            ? "仅本次有效"
+            : "本机已保存"
+          : saveResult === "failed"
+            ? "部分已同步"
+            : "云端已同步",
+      );
+      setToast("个人资料已清除，衣橱现在是空的");
+    } catch {
+      setToast("资料还没有全部清除，请检查网络后重试");
+    } finally {
+      setClearingData(false);
+    }
+  }
+
   return (
     <div className="site-shell">
       <header className="topbar">
-        <button type="button" className="brand" onClick={() => navigate("home")} aria-label="回到松松逛首页">
+        <button type="button" className="brand" disabled={!ready} onClick={() => navigate("home")} aria-label="回到松松逛首页">
           <span className="brand-mark" aria-hidden="true">松</span>
           <span><strong>松松逛</strong><small>MELLOW CLOSET</small></span>
         </button>
@@ -764,6 +892,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             <button
               type="button"
               key={item.id}
+              disabled={!ready}
               className={view === item.id ? "is-active" : ""}
               onClick={() => navigate(item.id)}
               aria-current={view === item.id ? "page" : undefined}
@@ -776,7 +905,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <span role="status" className={`sync-state sync-state--${dataMode === "云端已同步" || dataMode === "本机已保存" ? "saved" : "demo"}`}>
             <span aria-hidden="true">●</span> {dataMode}
           </span>
-          <button type="button" className="bag-button" onClick={() => setCartOpen(true)} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>
+          <button type="button" className="bag-button" disabled={!ready} onClick={() => setCartOpen(true)} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>
             <span aria-hidden="true">▢</span>
             <span>虚拟购物袋</span>
             <b>{cart.length}</b>
@@ -784,14 +913,26 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         </div>
       </header>
 
-      <main ref={mainRef}>
+      <span className="sr-only" role="status" aria-live="polite">
+        {ready ? "衣橱已准备好，现在可以编辑" : "正在取回你的衣橱"}
+      </span>
+
+      {!ready && (
+        <div className="hydration-status" role="status">
+          <span aria-hidden="true" /> 正在取回你的衣橱，完成前暂时不能编辑
+        </div>
+      )}
+      <main ref={mainRef} aria-busy={!ready} inert={ready ? undefined : true}>
         {view === "home" && (
           <HomeView
             metrics={metrics}
             avatarOutfit={avatarOutfit}
             wardrobe={wardrobe}
             mood={mood}
-            setMood={setMood}
+            setMood={(value) => {
+              setMood(value);
+              markLocalChange();
+            }}
             onNavigate={navigate}
             onWear={(item) => {
               wearItem(item);
@@ -812,6 +953,8 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             wardrobe={wardrobe}
             onAdd={() => setAddOpen(true)}
             onDelete={deleteWardrobeItem}
+            onClearData={clearPersonalData}
+            clearingData={clearingData}
             onWear={(item) => {
               wearItem(item);
               navigate("studio");
@@ -822,9 +965,9 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <StudioView
             wardrobe={wardrobe}
             metrics={metrics}
-            setMetrics={setMetrics}
+            setMetrics={updateMetrics}
             outfit={outfit}
-            setOutfit={setOutfit}
+            setOutfit={updateOutfit}
             avatarOutfit={avatarOutfit}
             onWear={wearItem}
             onSave={saveMetrics}
@@ -835,7 +978,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             wardrobe={wardrobe}
             metrics={metrics}
             onApply={(selection) => {
-              setOutfit(selection);
+              updateOutfit(selection);
               navigate("studio");
               setToast("这套已经穿到分身上");
             }}
@@ -848,6 +991,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <button
             type="button"
             key={item.id}
+            disabled={!ready}
             className={view === item.id ? "is-active" : ""}
             onClick={() => navigate(item.id)}
             aria-current={view === item.id ? "page" : undefined}
@@ -930,7 +1074,7 @@ function HomeView({
           </div>
           <DeferredAvatar metrics={metrics} outfit={avatarOutfit} compact />
           <div className="hero-look-note">
-            <span className="look-swatches" aria-hidden="true"><i style={{ background: avatarOutfit.top }} /><i style={{ background: avatarOutfit.bottom }} /><i style={{ background: avatarOutfit.outerwear }} /></span>
+            <span className="look-swatches" aria-hidden="true"><i style={{ background: avatarOutfit.top?.color }} /><i style={{ background: avatarOutfit.bottom?.color }} /><i style={{ background: avatarOutfit.outerwear?.color }} /></span>
             <div><strong>{hasCurrentLook ? "舒服但不无聊的一套" : "分身正在等第一套衣服"}</strong><small>{hasCurrentLook ? "适合散步、上课和不赶时间的下午" : "从衣橱穿上一件，或先去轻松逛逛"}</small></div>
           </div>
         </div>
@@ -1046,7 +1190,7 @@ function ShopView({
   );
 }
 
-function ClosetView({ wardrobe, onAdd, onWear, onDelete }: { wardrobe: WardrobeItem[]; onAdd: () => void; onWear: (item: WardrobeItem) => void; onDelete: (item: WardrobeItem) => void }) {
+function ClosetView({ wardrobe, onAdd, onWear, onDelete, onClearData, clearingData }: { wardrobe: WardrobeItem[]; onAdd: () => void; onWear: (item: WardrobeItem) => void; onDelete: (item: WardrobeItem) => void; onClearData: () => void; clearingData: boolean }) {
   const [category, setCategory] = useState<(typeof CLOSET_CATEGORIES)[number]>("全部");
   const visible = wardrobe.filter((item) => category === "全部" || item.category === category);
   const previewableCount = wardrobe.filter((item) => supportsAvatarTryOn(item.category)).length;
@@ -1065,14 +1209,18 @@ function ClosetView({ wardrobe, onAdd, onWear, onDelete }: { wardrobe: WardrobeI
         <div><span>资料完整度</span><strong>{completeness}<small>%</small></strong><p>补充尺寸会让参考更可靠</p></div>
       </section>
       <div className="closet-toolbar">
-        <div className="chip-row" aria-label="衣橱分类">{CLOSET_CATEGORIES.map((item) => <button type="button" key={item} className={category === item ? "is-active" : ""} onClick={() => setCategory(item)}>{item}</button>)}</div>
+        <div className="chip-row" role="group" aria-label="衣橱分类">{CLOSET_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={category === item} className={category === item ? "is-active" : ""} onClick={() => setCategory(item)}>{item}</button>)}</div>
         <span className="privacy-note">⌁ 身体与衣物资料默认保持私密</span>
       </div>
+      <section className="privacy-controls" aria-labelledby="privacy-controls-title" aria-busy={clearingData}>
+        <div><span aria-hidden="true">⌁</span><div><h2 id="privacy-controls-title">你的资料由你决定</h2><p>可随时清除衣橱、身体参数、搭配、收藏和虚拟购物袋；登录版会同时清除云端副本。</p></div></div>
+        <button type="button" className="button button--soft" disabled={clearingData} onClick={onClearData}>{clearingData ? "正在清除…" : "清除我的全部资料"}</button>
+      </section>
       <section className="wardrobe-grid">
         <button type="button" className="add-card" onClick={onAdd}><span>＋</span><strong>添加一件衣服</strong><small>拍照、链接或手动录入</small></button>
         {visible.map((item) => (
           <article className="wardrobe-card" key={item.id}>
-            <div className="wardrobe-visual"><span className={`source-pill ${item.source === "虚拟商品" ? "source-pill--virtual" : ""}`}>{item.source}</span>{item.imageUrl ? <img src={item.imageUrl} alt={item.name} /> : <MiniGarment item={item} />}</div>
+            <div className="wardrobe-visual"><span className={`source-pill ${item.source === "虚拟商品" ? "source-pill--virtual" : item.source === "示例衣物" ? "source-pill--sample" : ""}`}>{item.source}</span>{item.imageUrl ? <img src={item.imageUrl} alt={item.name} /> : <MiniGarment item={item} />}</div>
             <div className="wardrobe-info"><div><span>{item.category} · {item.size}</span><i style={{ background: item.color }} /></div><h2>{item.name}</h2><p>{item.season} · {item.style}</p><div className="confidence-line"><span>资料可信度</span><b className={`confidence confidence--${item.confidence === "高" ? "high" : item.confidence === "中" ? "mid" : "low"}`}>{item.confidence}</b></div><div className="wardrobe-actions"><button type="button" className="button button--dark" onClick={() => onWear(item)} disabled={!supportsAvatarTryOn(item.category)}>{supportsAvatarTryOn(item.category) ? "穿上看看" : "暂不支持 3D"}</button><button type="button" className="remove-garment" onClick={() => onDelete(item)} aria-label={`从衣橱移除${item.name}`}>移除</button></div></div>
           </article>
         ))}
@@ -1114,23 +1262,41 @@ function StudioView({
     setMetrics((current) => ({ ...current, ...preset, bodyShape: shape }));
   }
 
+  function removeFromOutfit(item: WardrobeItem) {
+    setOutfit((current) => ({
+      ...current,
+      ...(item.category === "上装"
+        ? { topId: undefined }
+        : item.category === "下装"
+          ? { bottomId: undefined }
+          : item.category === "连衣裙"
+            ? { dressId: undefined }
+            : item.category === "外套"
+              ? { outerwearId: undefined }
+              : {}),
+    }));
+  }
+
   return (
     <div className="page page--studio">
       <section className="studio-heading"><div><p className="eyebrow">3D FITTING STUDIO</p><h1>让分身更像你</h1><p>没有标准身材，调到看起来像你就好。</p></div><div className="studio-disclaimer"><span aria-hidden="true">i</span><p><strong>视觉参考，不是合身保证</strong>面料垂坠、弹性和真实松量可能不同。</p></div></section>
       <section className="studio-grid">
         <aside className="studio-panel studio-closet-panel">
           <div className="panel-title"><div><p>可试穿衣物</p><strong>{previewableWardrobe.length} 件</strong></div><span>点击穿上</span></div>
-          <div className="mini-chip-row" aria-label="试穿衣物分类">{STUDIO_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={closetCategory === item} className={closetCategory === item ? "is-active" : ""} onClick={() => setClosetCategory(item)}>{item}</button>)}</div>
-          <div className="studio-item-list">{visible.length ? visible.map((item) => <button type="button" key={item.id} className={selectedIds.includes(item.id) ? "is-wearing" : ""} onClick={() => onWear(item)}><div className="studio-thumb">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <MiniGarment item={item} />}</div><span><strong>{item.name}</strong><small>{item.category} · {item.size}</small></span><i aria-hidden="true">{selectedIds.includes(item.id) ? "✓" : "+"}</i></button>) : <div className="studio-list-empty"><span aria-hidden="true">◇</span><strong>这里还没有可试穿衣物</strong><p>上装、下装、连衣裙和外套会出现在这里。</p></div>}</div>
+          <div className="mini-chip-row" role="group" aria-label="试穿衣物分类">{STUDIO_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={closetCategory === item} className={closetCategory === item ? "is-active" : ""} onClick={() => setClosetCategory(item)}>{item}</button>)}</div>
+          <div className="studio-item-list">{visible.length ? visible.map((item) => {
+            const isWearing = selectedIds.includes(item.id);
+            return <button type="button" key={item.id} aria-pressed={isWearing} aria-label={`${isWearing ? "脱下" : "穿上"}${item.name}，${item.category}，${item.size} 码`} className={isWearing ? "is-wearing" : ""} onClick={() => isWearing ? removeFromOutfit(item) : onWear(item)}><div className="studio-thumb">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <MiniGarment item={item} />}</div><span><strong>{item.name}</strong><small>{item.category} · {item.size}</small></span><i aria-hidden="true">{isWearing ? "✓" : "+"}</i></button>;
+          }) : <div className="studio-list-empty"><span aria-hidden="true">◇</span><strong>这里还没有可试穿衣物</strong><p>上装、下装、连衣裙和外套会出现在这里。</p></div>}</div>
         </aside>
         <div className="studio-avatar-wrap">
           <div className="studio-status"><span><i className="status-dot" /> 三维身形示意</span><b>{metrics.height} cm · {metrics.weight} kg</b></div>
           <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
-          <div className="wearing-dock"><div><span>当前穿搭</span><div className="wearing-chips">{selected.length ? selected.map((item) => <button type="button" key={item.id} onClick={() => setOutfit((current) => ({ ...current, ...(item.category === "上装" ? { topId: undefined } : item.category === "下装" ? { bottomId: undefined } : item.category === "连衣裙" ? { dressId: undefined } : item.category === "外套" ? { outerwearId: undefined } : {}) }))}><i style={{ background: item.color }} />{item.name}<b>×</b></button>) : <span>还没有穿上衣服</span>}</div></div><button type="button" className="reset-button" disabled={!selected.length} onClick={() => setOutfit({})}>清空试穿</button></div>
+          <div className="wearing-dock"><div><span>当前穿搭</span><div className="wearing-chips">{selected.length ? selected.map((item) => <button type="button" key={item.id} aria-label={`脱下${item.name}`} onClick={() => removeFromOutfit(item)}><i aria-hidden="true" style={{ background: item.color }} />{item.name}<b aria-hidden="true">×</b></button>) : <span>还没有穿上衣服</span>}</div></div><button type="button" className="reset-button" aria-label="清空当前试穿" disabled={!selected.length} onClick={() => setOutfit({})}>清空试穿</button></div>
         </div>
         <aside className="studio-panel body-panel">
           <div className="panel-title"><div><p>我的分身</p><strong>手动微调</strong></div><span>实时更新</span></div>
-          <div className="preset-group"><label>身形起点</label><div className="preset-grid">{([ ["straight", "直筒"], ["pear", "梨形"], ["hourglass", "沙漏"], ["inverted", "倒三角"], ["apple", "苹果形"] ] as const).map(([value, label]) => <button type="button" key={value} className={metrics.bodyShape === value ? "is-active" : ""} onClick={() => choosePreset(value)}>{label}</button>)}</div></div>
+          <div className="preset-group"><span id="body-shape-label">身形起点</span><div className="preset-grid" role="group" aria-labelledby="body-shape-label">{([ ["straight", "直筒"], ["pear", "梨形"], ["hourglass", "沙漏"], ["inverted", "倒三角"], ["apple", "苹果形"] ] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={metrics.bodyShape === value} className={metrics.bodyShape === value ? "is-active" : ""} onClick={() => choosePreset(value)}>{label}</button>)}</div></div>
           <div className="metric-pair"><MetricInput label="身高" value={metrics.height} min={145} max={195} unit="cm" onChange={(height) => setMetrics((current) => ({ ...current, height }))} /><MetricInput label="体重" value={metrics.weight} min={38} max={120} unit="kg" onChange={(weight) => setMetrics((current) => ({ ...current, weight }))} /></div>
           <div className="slider-list">
             <BodySlider label="肩线" value={metrics.shoulder} min={32} max={52} left="窄" right="宽" onChange={(shoulder) => setMetrics((current) => ({ ...current, shoulder }))} />
@@ -1140,7 +1306,7 @@ function StudioView({
             <BodySlider label="上身比例" value={metrics.torso} min={42} max={58} left="短" right="长" onChange={(torso) => setMetrics((current) => ({ ...current, torso }))} />
             <BodySlider label="腿长比例" value={metrics.legs} min={72} max={94} left="短" right="长" onChange={(legs) => setMetrics((current) => ({ ...current, legs }))} />
           </div>
-          <div className="skin-row"><label>肤色示意</label><div>{["#f2d4bd", "#dfb08d", "#c98e68", "#9d654a", "#684235"].map((tone) => <button type="button" key={tone} aria-label={`选择肤色 ${tone}`} className={metrics.skinTone === tone ? "is-active" : ""} style={{ background: tone }} onClick={() => setMetrics((current) => ({ ...current, skinTone: tone }))} />)}</div></div>
+          <div className="skin-row"><span id="skin-tone-label">肤色示意</span><div role="group" aria-labelledby="skin-tone-label">{SKIN_TONES.map(([tone, label]) => <button type="button" key={tone} aria-label={label} aria-pressed={metrics.skinTone === tone} className={metrics.skinTone === tone ? "is-active" : ""} style={{ background: tone }} onClick={() => setMetrics((current) => ({ ...current, skinTone: tone }))} />)}</div></div>
           <button type="button" className="button button--primary button--full" onClick={onSave}>这就是现在的我</button>
           <div className="fit-readout"><div><span>当前上身松量</span><b>{fitLabel}</b></div><p>{ease === null ? "补充衣物胸围后，可以得到更可靠的参考。" : `根据已填数据，衣物与身体胸围相差约 ${ease} cm。`}</p><small>尺码建议不代表实际舒适度。</small></div>
         </aside>
@@ -1235,7 +1401,7 @@ function DailyView({ wardrobe, metrics, onApply }: { wardrobe: WardrobeItem[]; m
 
   return (
     <div className="page page--daily">
-      <section className="daily-hero"><div><p className="eyebrow">TODAY&apos;S OUTFIT</p><h1>今天穿什么，交给衣橱。</h1><p>只使用你已经拥有的衣服，根据天气、场景和今天的感觉给出最多三套建议。</p></div><div className="daily-date"><span>{todayLabel()}</span><strong>{weather} · 22°C</strong><small>天气为体验示例，可手动选择</small></div></section>
+      <section className="daily-hero"><div><p className="eyebrow">TODAY&apos;S OUTFIT</p><h1>今天穿什么，交给衣橱。</h1><p>使用衣橱里的衣服生成最多三套建议；内置示例衣物会清楚标出，不会冒充你的衣服。</p></div><div className="daily-date"><span>{todayLabel()}</span><strong>{weather} · 22°C</strong><small>天气为体验示例，可手动选择</small></div></section>
       <section className="preference-panel">
         <ChoiceGroup label="天气" options={["炎热", "温和", "偏凉", "下雨"]} value={weather} onChange={setWeather} />
         <ChoiceGroup label="场景" options={["通勤", "上课", "约会", "运动", "宅家"]} value={occasion} onChange={setOccasion} />
@@ -1265,7 +1431,13 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout }: { cart: Product[]; 
   return <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside ref={dialogRef} tabIndex={-1} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title"><div className="drawer-header"><div><p>VIRTUAL BAG</p><h2 id="cart-title">虚拟购物袋 <span>{cart.length}</span></h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭购物袋">×</button></div><div className="payment-reassurance"><span aria-hidden="true">♡</span><p><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div><div className="cart-list">{cart.length ? cart.map((item, index) => <article key={`${item.id}-${index}`}><div className="cart-thumb"><ProductVisual visual={item.visual} color={item.color} /></div><div><span>{item.category} · 虚拟商品</span><h3>{item.name}</h3><p>{item.points} 松松币</p></div><button type="button" onClick={() => onRemove(index)} aria-label={`移除${item.name}`}>×</button></article>) : <div className="cart-empty"><span>▢</span><h3>袋子还是轻轻的</h3><p>看到喜欢的再放进来，不急。</p></div>}</div><div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout}>完成这次虚拟购物</button><small>点击只会完成体验，不会提交付款或真实订单。</small></div></aside></div>;
 }
 
-function AddGarmentDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (item: WardrobeItem, photo?: File) => Promise<void> | void }) {
+function AddGarmentDialog({
+  onClose,
+  onAdd,
+}: {
+  onClose: () => void;
+  onAdd: (item: WardrobeItem, photo?: File) => Promise<void> | void;
+}) {
   const submittingRef = useRef(false);
   const closeWhenReady = () => {
     if (!submittingRef.current) onClose();
@@ -1278,28 +1450,56 @@ function AddGarmentDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (ite
   const [analyzed, setAnalyzed] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [name, setName] = useState("浅色宽松上衣");
+  const [name, setName] = useState("");
   const [category, setCategory] = useState<ClosetCategory>("上装");
   const [size, setSize] = useState("M");
   const [color, setColor] = useState("#d7dff0");
   const [season, setSeason] = useState<(typeof SEASON_OPTIONS)[number]>("四季");
   const [style, setStyle] = useState<(typeof STYLE_OPTIONS)[number]>("轻松");
   const [sourceUrl, setSourceUrl] = useState("");
-  const [chest, setChest] = useState("104");
+  const [sizeChartText, setSizeChartText] = useState("");
+  const [importError, setImportError] = useState("");
+  const [analysisMessage, setAnalysisMessage] = useState("");
+  const [matchedMeasurements, setMatchedMeasurements] = useState<string[]>([]);
+  const [chest, setChest] = useState("");
   const [waist, setWaist] = useState("");
   const [hips, setHips] = useState("");
-  const [length, setLength] = useState("65");
+  const [length, setLength] = useState("");
 
-  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
-  useEffect(() => () => {
-    if (estimateTimer.current !== null) window.clearTimeout(estimateTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
+  useEffect(
+    () => () => {
+      if (estimateTimer.current !== null)
+        window.clearTimeout(estimateTimer.current);
+    },
+    [],
+  );
 
   function choosePhoto(file?: File) {
+    setImportError("");
+    if (
+      file &&
+      (!CLIENT_IMAGE_TYPES.has(file.type.toLowerCase()) ||
+        file.size > MAX_CLIENT_IMAGE_BYTES)
+    ) {
+      setPhoto(undefined);
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(undefined);
+      setAnalyzed(false);
+      setImportError("请选择小于 6 MB 的 JPEG、PNG 或 WebP 图片。");
+      return;
+    }
     setPhoto(file);
     if (preview) URL.revokeObjectURL(preview);
     setPreview(file ? URL.createObjectURL(file) : undefined);
     setAnalyzed(false);
+    setMatchedMeasurements([]);
+    setAnalysisMessage("");
   }
 
   function changeMode(nextMode: "photo" | "link" | "manual") {
@@ -1308,39 +1508,90 @@ function AddGarmentDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (ite
       if (preview) URL.revokeObjectURL(preview);
       setPreview(undefined);
     }
-    if (mode === "link" && nextMode !== "link") setSourceUrl("");
+    if (mode === "link" && nextMode !== "link") {
+      setSourceUrl("");
+      setSizeChartText("");
+    }
     if (estimateTimer.current !== null) {
       window.clearTimeout(estimateTimer.current);
       estimateTimer.current = null;
     }
     setAnalyzing(false);
     setAnalyzed(false);
+    setImportError("");
+    setMatchedMeasurements([]);
+    setAnalysisMessage("");
     setMode(nextMode);
   }
 
   function runEstimate() {
     setAnalyzing(true);
-    if (estimateTimer.current !== null) window.clearTimeout(estimateTimer.current);
+    setImportError("");
+    if (estimateTimer.current !== null)
+      window.clearTimeout(estimateTimer.current);
     estimateTimer.current = window.setTimeout(() => {
+      if (mode === "link") {
+        const { measurements, matched } =
+          extractGarmentMeasurements(sizeChartText);
+        const previouslyRecognized = new Set(matchedMeasurements);
+        const applyRecognizedValue = (
+          field: "chest" | "waist" | "hips" | "length",
+          value: number | undefined,
+          setter: React.Dispatch<React.SetStateAction<string>>,
+        ) => {
+          if (value !== undefined) setter(String(value));
+          else if (previouslyRecognized.has(field)) setter("");
+        };
+        applyRecognizedValue("chest", measurements.chest, setChest);
+        applyRecognizedValue("waist", measurements.waist, setWaist);
+        applyRecognizedValue("hips", measurements.hips, setHips);
+        applyRecognizedValue("length", measurements.length, setLength);
+        setMatchedMeasurements(matched);
+        setAnalysisMessage(
+          matched.length
+            ? `已从你粘贴的尺码文字中识别 ${matched.length} 项；请对照原网页确认后再保存。`
+            : "没有找到带名称的尺寸。请粘贴“胸围 104 cm、衣长 67 cm”这类文字，或直接手动填写。",
+        );
+      } else {
+        setMatchedMeasurements([]);
+        setAnalysisMessage(
+          "照片已准备好。请根据照片中的 A4 纸或尺子手动填写尺寸；当前不会凭一张照片猜测厘米数。",
+        );
+      }
       setAnalyzing(false);
       setAnalyzed(true);
       estimateTimer.current = null;
-    }, 850);
+    }, 260);
+  }
+
+  function setManualMeasurement(
+    field: "chest" | "waist" | "hips" | "length",
+    value: string,
+    setter: React.Dispatch<React.SetStateAction<string>>,
+  ) {
+    setter(value);
+    setMatchedMeasurements((current) =>
+      current.filter((candidate) => candidate !== field),
+    );
   }
 
   function handleModeKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
     const modes = ["photo", "link", "manual"] as const;
     const currentIndex = modes.indexOf(mode);
     let nextIndex = currentIndex;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % modes.length;
-    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + modes.length) % modes.length;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown")
+      nextIndex = (currentIndex + 1) % modes.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp")
+      nextIndex = (currentIndex - 1 + modes.length) % modes.length;
     else if (event.key === "Home") nextIndex = 0;
     else if (event.key === "End") nextIndex = modes.length - 1;
     else return;
     event.preventDefault();
     const nextMode = modes[nextIndex];
     changeMode(nextMode);
-    window.requestAnimationFrame(() => document.getElementById(`add-mode-${nextMode}`)?.focus());
+    window.requestAnimationFrame(() =>
+      document.getElementById(`add-mode-${nextMode}`)?.focus(),
+    );
   }
 
   async function submit(event: React.FormEvent) {
@@ -1349,17 +1600,458 @@ function AddGarmentDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (ite
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      await onAdd({ id: `w-${crypto.randomUUID()}`, name: name.trim() || "未命名衣物", category, color, colorName: colorNameFromHex(color), size, source: "我的衣服", sourceUrl: mode === "link" && sourceUrl ? sourceUrl : undefined, season, style, chest: chest ? Number(chest) : undefined, waist: waist ? Number(waist) : undefined, hips: hips ? Number(hips) : undefined, length: length ? Number(length) : undefined, confidence: analyzed ? "中" : "待确认", imageUrl: mode === "photo" ? preview : undefined }, mode === "photo" ? photo : undefined);
+      await onAdd(
+        {
+          id: `w-${crypto.randomUUID()}`,
+          name: name.trim() || "未命名衣物",
+          category,
+          color,
+          colorName: colorNameFromHex(color),
+          size,
+          source: "我的衣服",
+          sourceUrl: mode === "link" && sourceUrl ? sourceUrl : undefined,
+          season,
+          style,
+          chest: chest ? Number(chest) : undefined,
+          waist: waist ? Number(waist) : undefined,
+          hips: hips ? Number(hips) : undefined,
+          length: length ? Number(length) : undefined,
+          confidence: matchedMeasurements.length ? "中" : "待确认",
+          imageUrl: mode === "photo" ? preview : undefined,
+        },
+        mode === "photo" ? photo : undefined,
+      );
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
     }
   }
 
-  return <div className="modal-layer modal-layer--center" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}><div ref={dialogRef} tabIndex={-1} className="add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title"><div className="drawer-header"><div><p>ADD TO WARDROBE</p><h2 id="add-title">添加一件衣服</h2></div><button type="button" className="icon-button" disabled={submitting} onClick={onClose} aria-label="关闭添加衣物窗口">×</button></div><div className="import-tabs" role="tablist" aria-label="衣物录入方式"><button id="add-mode-photo" aria-controls="add-mode-panel" tabIndex={mode === "photo" ? 0 : -1} type="button" role="tab" aria-selected={mode === "photo"} className={mode === "photo" ? "is-active" : ""} onKeyDown={handleModeKeyDown} onClick={() => changeMode("photo")}><span>▣</span>拍照录入</button><button id="add-mode-link" aria-controls="add-mode-panel" tabIndex={mode === "link" ? 0 : -1} type="button" role="tab" aria-selected={mode === "link"} className={mode === "link" ? "is-active" : ""} onKeyDown={handleModeKeyDown} onClick={() => changeMode("link")}><span>↗</span>购买链接</button><button id="add-mode-manual" aria-controls="add-mode-panel" tabIndex={mode === "manual" ? 0 : -1} type="button" role="tab" aria-selected={mode === "manual"} className={mode === "manual" ? "is-active" : ""} onKeyDown={handleModeKeyDown} onClick={() => changeMode("manual")}><span>⌨</span>手动录入</button></div><form onSubmit={submit} aria-busy={submitting}><div id="add-mode-panel" role="tabpanel" aria-labelledby={`add-mode-${mode}`} className="add-dialog-body">{mode === "photo" && <div className="photo-import"><label className={`upload-zone ${preview ? "has-preview" : ""}`}>{preview ? <img src={preview} alt="待录入衣物预览" /> : <><span>＋</span><strong>上传衣物正面照</strong><small>点击选择或直接拍照</small></>}<input type="file" accept="image/*" capture="environment" onChange={(event) => choosePhoto(event.target.files?.[0])} /></label><div className="photo-tip"><span aria-hidden="true">☀</span><p><strong>这样拍，之后测量会更可靠</strong>把衣服平铺在纯色背景上，相机尽量垂直；旁边放 A4 纸或尺子作为比例参照。</p></div><button type="button" className="button button--soft button--full" onClick={runEstimate} disabled={!photo || analyzing}>{analyzing ? "正在准备可编辑示例…" : "生成可编辑示例"}</button></div>}{mode === "link" && <div className="link-import"><label><span>商品购买链接</span><div><span aria-hidden="true">↗</span><input type="url" placeholder="https://example.com/product" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} /></div></label><button type="button" className="button button--soft button--full" onClick={runEstimate} disabled={!sourceUrl || analyzing}>{analyzing ? "正在准备可编辑示例…" : "根据链接准备可编辑示例"}</button><p className="inline-note">当前不会自动抓取商家网页；链接会随衣物保存，示例字段需要你确认或修改。</p></div>}<div className="garment-fields"><div className="form-section-title"><h3>{mode === "manual" ? "衣物信息" : "确认衣物信息"}</h3>{analyzed && <span>可编辑示例 · 6 项待确认</span>}</div><label className="field field--wide"><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} required /></label><div className="field-row"><label className="field"><span>分类</span><select value={category} onChange={(event) => setCategory(event.target.value as ClosetCategory)}>{CLOSET_CATEGORIES.slice(1).map((item) => <option key={item}>{item}</option>)}</select></label><label className="field"><span>尺码标签</span><input value={size} onChange={(event) => setSize(event.target.value)} /></label><label className="field color-field"><span>主色</span><div><input type="color" value={color} onChange={(event) => setColor(event.target.value)} /><b>{colorNameFromHex(color)}</b></div></label></div><div className="field-row field-row--two"><label className="field"><span>适合季节</span><select value={season} onChange={(event) => setSeason(event.target.value as (typeof SEASON_OPTIONS)[number])}>{SEASON_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select></label><label className="field"><span>穿衣感觉</span><select value={style} onChange={(event) => setStyle(event.target.value as (typeof STYLE_OPTIONS)[number])}>{STYLE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select></label></div><div className="measurement-grid"><label><span>胸围</span><div><input type="number" min="20" max="250" step="0.1" inputMode="decimal" value={chest} onChange={(event) => setChest(event.target.value)} /><b>cm</b></div></label><label><span>腰围</span><div><input type="number" min="20" max="250" step="0.1" inputMode="decimal" value={waist} onChange={(event) => setWaist(event.target.value)} placeholder="可跳过" /><b>cm</b></div></label><label><span>臀围</span><div><input type="number" min="20" max="250" step="0.1" inputMode="decimal" value={hips} onChange={(event) => setHips(event.target.value)} placeholder="可跳过" /><b>cm</b></div></label><label><span>衣长</span><div><input type="number" min="10" max="300" step="0.1" inputMode="decimal" value={length} onChange={(event) => setLength(event.target.value)} /><b>cm</b></div></label></div>{analyzed && <div className="analysis-result"><div><span>示例状态</span><b>等待你确认</b></div><div><span>数据来源</span><b>{mode === "link" ? "链接留存 + 可编辑示例" : "照片留存 + 可编辑示例"}</b></div><p>这些示例值没有经过自动测量，只用于帮助录入；不代表衣服的实际尺寸、弹性或垂坠。</p></div>}</div></div><div className="dialog-footer"><button type="button" className="button button--soft" disabled={submitting} onClick={onClose}>暂时不加</button><button type="submit" className="button button--primary" disabled={submitting}>{submitting ? "正在保存…" : "确认，放进衣橱"}</button></div></form></div></div>;
+  return (
+    <div
+      className="modal-layer modal-layer--center"
+      role="presentation"
+      onMouseDown={(event) =>
+        event.target === event.currentTarget && !submitting && onClose()
+      }
+    >
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="add-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-title"
+      >
+        <div className="drawer-header">
+          <div>
+            <p>ADD TO WARDROBE</p>
+            <h2 id="add-title">添加一件衣服</h2>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            disabled={submitting}
+            onClick={onClose}
+            aria-label="关闭添加衣物窗口"
+          >
+            ×
+          </button>
+        </div>
+        <div className="import-tabs" role="tablist" aria-label="衣物录入方式">
+          <button
+            id="add-mode-photo"
+            aria-controls="add-mode-panel"
+            tabIndex={mode === "photo" ? 0 : -1}
+            type="button"
+            role="tab"
+            aria-selected={mode === "photo"}
+            className={mode === "photo" ? "is-active" : ""}
+            onKeyDown={handleModeKeyDown}
+            onClick={() => changeMode("photo")}
+          >
+            <span>▣</span>拍照录入
+          </button>
+          <button
+            id="add-mode-link"
+            aria-controls="add-mode-panel"
+            tabIndex={mode === "link" ? 0 : -1}
+            type="button"
+            role="tab"
+            aria-selected={mode === "link"}
+            className={mode === "link" ? "is-active" : ""}
+            onKeyDown={handleModeKeyDown}
+            onClick={() => changeMode("link")}
+          >
+            <span>↗</span>购买链接
+          </button>
+          <button
+            id="add-mode-manual"
+            aria-controls="add-mode-panel"
+            tabIndex={mode === "manual" ? 0 : -1}
+            type="button"
+            role="tab"
+            aria-selected={mode === "manual"}
+            className={mode === "manual" ? "is-active" : ""}
+            onKeyDown={handleModeKeyDown}
+            onClick={() => changeMode("manual")}
+          >
+            <span>⌨</span>手动录入
+          </button>
+        </div>
+        <form onSubmit={submit} aria-busy={submitting}>
+          <div
+            id="add-mode-panel"
+            role="tabpanel"
+            aria-labelledby={`add-mode-${mode}`}
+            className="add-dialog-body"
+          >
+            {mode === "photo" && (
+              <div className="photo-import">
+                <label
+                  className={`upload-zone ${preview ? "has-preview" : ""}`}
+                >
+                  {preview ? (
+                    <img src={preview} alt="待录入衣物预览" />
+                  ) : (
+                    <>
+                      <span>＋</span>
+                      <strong>上传衣物正面照</strong>
+                      <small>点击选择或直接拍照</small>
+                    </>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    capture="environment"
+                    onChange={(event) => choosePhoto(event.target.files?.[0])}
+                  />
+                </label>
+                {importError && (
+                  <p className="import-error" role="alert">
+                    {importError}
+                  </p>
+                )}
+                <div className="photo-tip">
+                  <span aria-hidden="true">☀</span>
+                  <p>
+                    <strong>这样拍，之后测量会更可靠</strong>
+                    把衣服平铺在纯色背景上，相机尽量垂直；旁边放 A4
+                    纸或尺子作为比例参照。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="button button--soft button--full"
+                  onClick={runEstimate}
+                  disabled={!photo || analyzing}
+                >
+                  {analyzing ? "正在准备照片记录…" : "使用照片并填写尺寸"}
+                </button>
+              </div>
+            )}
+            {mode === "link" && (
+              <div className="link-import">
+                <label>
+                  <span>商品购买链接</span>
+                  <div>
+                    <span aria-hidden="true">↗</span>
+                    <input
+                      type="url"
+                      placeholder="https://example.com/product"
+                      value={sourceUrl}
+                      maxLength={1000}
+                      required
+                      onChange={(event) => {
+                        setSourceUrl(event.target.value);
+                        setAnalyzed(false);
+                      }}
+                    />
+                  </div>
+                </label>
+                <label className="size-chart-input">
+                  <span>尺码表文字（可选）</span>
+                  <textarea
+                    rows={5}
+                    value={sizeChartText}
+                    placeholder="例如：M 码 胸围 104 cm，腰围 86 cm，衣长 67 cm"
+                    onChange={(event) => {
+                      setSizeChartText(event.target.value);
+                      setAnalyzed(false);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="button button--soft button--full"
+                  onClick={runEstimate}
+                  disabled={!sourceUrl || !sizeChartText.trim() || analyzing}
+                >
+                  {analyzing ? "正在读取尺码文字…" : "识别尺码文字"}
+                </button>
+                <p className="inline-note">
+                  为保护隐私，当前不会自动抓取商家网页。链接会保存；你可以粘贴尺码表文字，让我们只提取明确标注的尺寸。
+                </p>
+              </div>
+            )}
+            <div className="garment-fields">
+              <div className="form-section-title">
+                <h3>{mode === "manual" ? "衣物信息" : "确认衣物信息"}</h3>
+                {analyzed && (
+                  <span>
+                    {matchedMeasurements.length
+                      ? `已识别 ${matchedMeasurements.length} 项`
+                      : "等待手动确认"}
+                  </span>
+                )}
+              </div>
+              <label className="field field--wide">
+                <span>名称</span>
+                <input
+                  value={name}
+                  placeholder="例如：浅蓝落肩衬衫"
+                  onChange={(event) => setName(event.target.value)}
+                  required
+                />
+              </label>
+              <div className="field-row">
+                <label className="field">
+                  <span>分类</span>
+                  <select
+                    value={category}
+                    onChange={(event) =>
+                      setCategory(event.target.value as ClosetCategory)
+                    }
+                  >
+                    {CLOSET_CATEGORIES.slice(1).map((item) => (
+                      <option key={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>尺码标签</span>
+                  <input
+                    value={size}
+                    onChange={(event) => setSize(event.target.value)}
+                  />
+                </label>
+                <label className="field color-field">
+                  <span>主色</span>
+                  <div>
+                    <input
+                      type="color"
+                      value={color}
+                      onChange={(event) => setColor(event.target.value)}
+                    />
+                    <b>{colorNameFromHex(color)}</b>
+                  </div>
+                </label>
+              </div>
+              <div className="field-row field-row--two">
+                <label className="field">
+                  <span>适合季节</span>
+                  <select
+                    value={season}
+                    onChange={(event) =>
+                      setSeason(
+                        event.target.value as (typeof SEASON_OPTIONS)[number],
+                      )
+                    }
+                  >
+                    {SEASON_OPTIONS.map((option) => (
+                      <option key={option}>{option}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>穿衣感觉</span>
+                  <select
+                    value={style}
+                    onChange={(event) =>
+                      setStyle(
+                        event.target.value as (typeof STYLE_OPTIONS)[number],
+                      )
+                    }
+                  >
+                    {STYLE_OPTIONS.map((option) => (
+                      <option key={option}>{option}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="measurement-grid">
+                <label>
+                  <span>胸围</span>
+                  <div>
+                    <input
+                      type="number"
+                      min="20"
+                      max="250"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={chest}
+                      onChange={(event) =>
+                        setManualMeasurement("chest", event.target.value, setChest)
+                      }
+                    />
+                    <b>cm</b>
+                  </div>
+                </label>
+                <label>
+                  <span>腰围</span>
+                  <div>
+                    <input
+                      type="number"
+                      min="20"
+                      max="250"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={waist}
+                      onChange={(event) =>
+                        setManualMeasurement("waist", event.target.value, setWaist)
+                      }
+                      placeholder="可跳过"
+                    />
+                    <b>cm</b>
+                  </div>
+                </label>
+                <label>
+                  <span>臀围</span>
+                  <div>
+                    <input
+                      type="number"
+                      min="20"
+                      max="250"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={hips}
+                      onChange={(event) =>
+                        setManualMeasurement("hips", event.target.value, setHips)
+                      }
+                      placeholder="可跳过"
+                    />
+                    <b>cm</b>
+                  </div>
+                </label>
+                <label>
+                  <span>衣长</span>
+                  <div>
+                    <input
+                      type="number"
+                      min="10"
+                      max="300"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={length}
+                      onChange={(event) =>
+                        setManualMeasurement("length", event.target.value, setLength)
+                      }
+                    />
+                    <b>cm</b>
+                  </div>
+                </label>
+              </div>
+              {analyzed && (
+                <div className="analysis-result">
+                  <div>
+                    <span>记录状态</span>
+                    <b>
+                      {matchedMeasurements.length
+                        ? `识别到 ${matchedMeasurements.length} 项尺寸`
+                        : "没有自动填写尺寸"}
+                    </b>
+                  </div>
+                  <div>
+                    <span>数据来源</span>
+                    <b>
+                      {mode === "link"
+                        ? "你粘贴的尺码文字"
+                        : "照片留存 + 手动确认"}
+                    </b>
+                  </div>
+                  <p>{analysisMessage}</p>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="dialog-footer">
+            <button
+              type="button"
+              className="button button--soft"
+              disabled={submitting}
+              onClick={onClose}
+            >
+              暂时不加
+            </button>
+            <button
+              type="submit"
+              className="button button--primary"
+              disabled={submitting}
+            >
+              {submitting ? "正在保存…" : "确认，放进衣橱"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
-function CelebrationDialog({ onClose, onCloset }: { onClose: () => void; onCloset: () => void }) {
+function CelebrationDialog({
+  onClose,
+  onCloset,
+}: {
+  onClose: () => void;
+  onCloset: () => void;
+}) {
   const dialogRef = useDialogAccessibility<HTMLDivElement>(onClose);
-  return <div className="modal-layer modal-layer--center celebration-layer" role="presentation"><div ref={dialogRef} tabIndex={-1} className="celebration-dialog" role="dialog" aria-modal="true" aria-labelledby="celebration-title"><div className="confetti" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</div><span className="celebration-icon" aria-hidden="true">♡</span><p>VIRTUAL CHECKOUT COMPLETE</p><h2 id="celebration-title">喜欢的东西已经收下，<br />这次不用花一分钱。</h2><p className="celebration-copy">服装类虚拟商品会放进衣橱；美妆与装饰会留在虚拟收藏。上装、下装、连衣裙和外套还可以继续让分身试穿。这里没有付款，也没有真实订单。</p><div><button type="button" className="button button--primary" onClick={onCloset}>去衣橱看看</button><button type="button" className="button button--soft" onClick={onClose}>继续慢慢逛</button></div></div></div>;
+  return (
+    <div
+      className="modal-layer modal-layer--center celebration-layer"
+      role="presentation"
+    >
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="celebration-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="celebration-title"
+      >
+        <div className="confetti" aria-hidden="true">
+          {Array.from({ length: 12 }, (_, index) => (
+            <i key={index} />
+          ))}
+        </div>
+        <span className="celebration-icon" aria-hidden="true">
+          ♡
+        </span>
+        <p>VIRTUAL CHECKOUT COMPLETE</p>
+        <h2 id="celebration-title">
+          喜欢的东西已经收下，
+          <br />
+          这次不用花一分钱。
+        </h2>
+        <p className="celebration-copy">
+          服装类虚拟商品会放进衣橱；美妆与装饰会留在虚拟收藏。上装、下装、连衣裙和外套还可以继续让分身试穿。这里没有付款，也没有真实订单。
+        </p>
+        <div>
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={onCloset}
+          >
+            去衣橱看看
+          </button>
+          <button
+            type="button"
+            className="button button--soft"
+            onClick={onClose}
+          >
+            继续慢慢逛
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

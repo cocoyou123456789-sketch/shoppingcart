@@ -15,7 +15,7 @@ export type WardrobeItem = {
   color: string;
   colorName: string;
   size: string;
-  source: "我的衣服" | "虚拟商品";
+  source: "我的衣服" | "虚拟商品" | "示例衣物";
   sourceUrl?: string;
   imageUrl?: string;
   season: string;
@@ -159,7 +159,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#e8e1d3",
     colorName: "奶油白",
     size: "M",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "四季",
     style: "轻松",
     chest: 100,
@@ -173,7 +173,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#aebfd1",
     colorName: "晨雾蓝",
     size: "M",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "春秋",
     style: "利落",
     chest: 108,
@@ -187,7 +187,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#626b58",
     colorName: "苔藓绿",
     size: "M",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "四季",
     style: "利落",
     waist: 76,
@@ -202,7 +202,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#9d8fb5",
     colorName: "浅丁香",
     size: "L",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "春夏",
     style: "温柔",
     waist: 78,
@@ -217,7 +217,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#c77868",
     colorName: "柔珊瑚",
     size: "L",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "春夏",
     style: "有点亮眼",
     chest: 98,
@@ -233,7 +233,7 @@ export const SAMPLE_WARDROBE: WardrobeItem[] = [
     color: "#b9a68f",
     colorName: "燕麦杏",
     size: "M",
-    source: "我的衣服",
+    source: "示例衣物",
     season: "春秋",
     style: "利落",
     chest: 112,

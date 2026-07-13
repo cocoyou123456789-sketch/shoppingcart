@@ -61,7 +61,7 @@ async function stopServer(child) {
   }
 }
 
-test("authenticated users keep profiles, garments, and images isolated", { timeout: 60_000 }, async () => {
+test("authenticated users keep profiles, garments, and images isolated", { timeout: 180_000 }, async () => {
   const logs = { value: "" };
   const child = spawn(
     "npm",
@@ -114,6 +114,13 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       body: "hello",
     });
     assert.equal(wrongGarmentType.status, 415);
+
+    const oversizedRequest = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: { ...userA, "content-type": "multipart/form-data; boundary=oversized" },
+      body: Buffer.alloc(7 * 1024 * 1024),
+    });
+    assert.equal(oversizedRequest.status, 413);
 
     const invalidGarment = garmentForm();
     invalidGarment.set("name", "x".repeat(121));
@@ -182,6 +189,22 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     });
     assert.equal(forgedImageResponse.status, 400);
 
+    const vp8xOnly = Buffer.alloc(38);
+    vp8xOnly.write("RIFF", 0);
+    vp8xOnly.writeUInt32LE(vp8xOnly.length - 8, 4);
+    vp8xOnly.write("WEBP", 8);
+    vp8xOnly.write("VP8X", 12);
+    vp8xOnly.writeUInt32LE(10, 16);
+    vp8xOnly.write("JUNK", 30);
+    const forgedWebp = garmentForm();
+    forgedWebp.set("photo", new Blob([vp8xOnly], { type: "image/webp" }), "header-only.webp");
+    const forgedWebpResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: forgedWebp,
+    });
+    assert.equal(forgedWebpResponse.status, 400);
+
     const profile = {
       height: 166,
       weight: 58,
@@ -200,8 +223,12 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       body: JSON.stringify(profile),
     });
     assert.equal(profileSave.status, 200, logs.value);
-    const ownProfile = await fetch(`${origin}/api/profile`, { headers: userA }).then((response) => response.json());
-    const otherProfile = await fetch(`${origin}/api/profile`, { headers: userB }).then((response) => response.json());
+    const ownProfileResponse = await fetch(`${origin}/api/profile`, { headers: userA });
+    const otherProfileResponse = await fetch(`${origin}/api/profile`, { headers: userB });
+    assert.equal(ownProfileResponse.headers.get("cache-control"), "private, no-store");
+    assert.equal(otherProfileResponse.headers.get("cache-control"), "private, no-store");
+    const ownProfile = await ownProfileResponse.json();
+    const otherProfile = await otherProfileResponse.json();
     assert.equal(ownProfile.profile.height, 166);
     assert.equal(otherProfile.profile, null);
 
@@ -214,8 +241,13 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.match(item.id, /^w-[0-9a-f-]{36}$/);
     assert.notEqual(item.id, "w-client-controlled");
 
-    const ownItems = await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json());
-    const otherItems = await fetch(`${origin}/api/wardrobe`, { headers: userB }).then((response) => response.json());
+    const ownItemsResponse = await fetch(`${origin}/api/wardrobe`, { headers: userA });
+    const otherItemsResponse = await fetch(`${origin}/api/wardrobe`, { headers: userB });
+    assert.equal(ownItemsResponse.headers.get("cache-control"), "private, no-store");
+    assert.equal(otherItemsResponse.headers.get("cache-control"), "private, no-store");
+    const ownItems = await ownItemsResponse.json();
+    const otherItems = await otherItemsResponse.json();
+    assert.equal(ownItems.limit, 200);
     assert.ok(ownItems.items.some((entry) => entry.id === item.id));
     assert.ok(!otherItems.items.some((entry) => entry.id === item.id));
 
@@ -223,11 +255,114 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const otherImage = await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`, { headers: userB });
     assert.equal(ownImage.status, 200);
     assert.equal(otherImage.status, 404);
+    assert.equal(ownImage.headers.get("cache-control"), "private, no-store");
+    assert.equal(ownImage.headers.get("x-content-type-options"), "nosniff");
 
     const deleteResponse = await fetch(`${origin}/api/wardrobe?id=${encodeURIComponent(item.id)}`, { method: "DELETE", headers: userA });
     assert.equal(deleteResponse.status, 204);
     const afterDelete = await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json());
     assert.ok(!afterDelete.items.some((entry) => entry.id === item.id));
+
+    const otherProfileSave = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userB, "content-type": "application/json" },
+      body: JSON.stringify({ ...profile, height: 174 }),
+    });
+    assert.equal(otherProfileSave.status, 200);
+    const clearAForm = garmentForm();
+    clearAForm.set("name", "待清除的 A 上衣");
+    clearAForm.set("photo", new Blob([validPng], { type: "image/png" }), "a.png");
+    const clearBForm = garmentForm();
+    clearBForm.set("name", "应保留的 B 上衣");
+    clearBForm.set("photo", new Blob([validPng], { type: "image/png" }), "b.png");
+    const [clearACreate, clearBCreate] = await Promise.all([
+      fetch(`${origin}/api/wardrobe`, { method: "POST", headers: userA, body: clearAForm }),
+      fetch(`${origin}/api/wardrobe`, { method: "POST", headers: userB, body: clearBForm }),
+    ]);
+    assert.equal(clearACreate.status, 201, logs.value);
+    assert.equal(clearBCreate.status, 201, logs.value);
+    const clearAItem = (await clearACreate.json()).item;
+    const clearBItem = (await clearBCreate.json()).item;
+
+    const clearWardrobe = await fetch(`${origin}/api/wardrobe?scope=all`, {
+      method: "DELETE",
+      headers: userA,
+    });
+    const clearProfile = await fetch(`${origin}/api/profile`, {
+      method: "DELETE",
+      headers: userA,
+    });
+    assert.equal(clearWardrobe.status, 204, logs.value);
+    assert.equal(clearProfile.status, 204, logs.value);
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe`, { headers: userA }).then((response) => response.json())).items.length,
+      0,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/profile`, { headers: userA }).then((response) => response.json())).profile,
+      null,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(clearAItem.id)}`, { headers: userA })).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(clearBItem.id)}`, { headers: userB })).status,
+      200,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/profile`, { headers: userB }).then((response) => response.json())).profile.height,
+      174,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe?scope=all`, { method: "DELETE", headers: userA })).status,
+      204,
+    );
+    assert.equal(
+      (await fetch(`${origin}/api/profile`, { method: "DELETE", headers: userA })).status,
+      204,
+    );
+
+    const quotaUser = { "oai-authenticated-user-email": `quota-${runId}@example.com` };
+    for (let start = 0; start < 199; start += 20) {
+      const count = Math.min(20, 199 - start);
+      const responses = await Promise.all(
+        Array.from({ length: count }, (_, index) => {
+          const quotaForm = garmentForm();
+          quotaForm.set("name", `配额衣物 ${start + index + 1}`);
+          return fetch(`${origin}/api/wardrobe`, {
+            method: "POST",
+            headers: quotaUser,
+            body: quotaForm,
+          });
+        }),
+      );
+      assert.ok(responses.every((response) => response.status === 201), logs.value);
+    }
+    const finalResponses = await Promise.all(
+      ["并发第 200 件", "并发第 201 件"].map((name) => {
+        const quotaForm = garmentForm();
+        quotaForm.set("name", name);
+        return fetch(`${origin}/api/wardrobe`, {
+          method: "POST",
+          headers: quotaUser,
+          body: quotaForm,
+        });
+      }),
+    );
+    assert.deepEqual(finalResponses.map((response) => response.status).sort(), [201, 409]);
+    const quotaItems = await fetch(`${origin}/api/wardrobe`, { headers: quotaUser }).then((response) => response.json());
+    assert.equal(quotaItems.items.length, 200);
+    const overLimit = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: quotaUser,
+      body: garmentForm(),
+    });
+    assert.equal(overLimit.status, 409);
+    assert.equal(
+      (await fetch(`${origin}/api/wardrobe?scope=all`, { method: "DELETE", headers: quotaUser })).status,
+      204,
+    );
   } finally {
     await stopServer(child);
   }

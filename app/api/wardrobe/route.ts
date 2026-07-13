@@ -4,7 +4,10 @@ import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
 const ALLOWED_CATEGORIES = new Set(["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"]);
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 512 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
+const MAX_WARDROBE_ITEMS = 200;
+const PRIVATE_JSON_HEADERS = { "cache-control": "private, no-store" };
 const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
   let entry = value;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -61,7 +64,7 @@ function isStructuredPng(bytes: Uint8Array, view: DataView) {
       if (!width || !height || width > 12_000 || height > 12_000 || width * height > MAX_IMAGE_PIXELS) return false;
       sawHeader = true;
     } else if (label === "IDAT") {
-      sawImageData = true;
+      sawImageData ||= length > 0;
     } else if (label === "IEND") {
       return length === 0 && sawImageData && chunkEnd === bytes.length;
     }
@@ -90,8 +93,41 @@ function isStructuredJpeg(bytes: Uint8Array, view: DataView) {
       if (!width || !height || width * height > MAX_IMAGE_PIXELS) return false;
       sawFrame = true;
     }
-    if (marker === 0xda) return sawFrame && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
+    if (marker === 0xda) {
+      const scanStart = offset + length;
+      return sawFrame && scanStart < bytes.length - 2 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
+    }
     offset += length;
+  }
+  return false;
+}
+
+function validImageDimensions(width: number, height: number) {
+  return Boolean(width && height && width <= 12_000 && height <= 12_000 && width * height <= MAX_IMAGE_PIXELS);
+}
+
+function uint24LittleEndian(bytes: Uint8Array, offset: number) {
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+}
+
+function validWebpImageChunk(
+  bytes: Uint8Array,
+  view: DataView,
+  offset: number,
+  label: string,
+  length: number,
+) {
+  if (label === "VP8 " && length > 10) {
+    if (bytes[offset + 11] !== 0x9d || bytes[offset + 12] !== 0x01 || bytes[offset + 13] !== 0x2a) return false;
+    const width = view.getUint16(offset + 14, true) & 0x3fff;
+    const height = view.getUint16(offset + 16, true) & 0x3fff;
+    return validImageDimensions(width, height);
+  }
+  if (label === "VP8L" && length > 5 && bytes[offset + 8] === 0x2f) {
+    const dimensions = view.getUint32(offset + 9, true);
+    const width = (dimensions & 0x3fff) + 1;
+    const height = ((dimensions >>> 14) & 0x3fff) + 1;
+    return validImageDimensions(width, height);
   }
   return false;
 }
@@ -105,12 +141,24 @@ function isStructuredWebp(bytes: Uint8Array, view: DataView) {
     const length = view.getUint32(offset + 4, true);
     const chunkEnd = offset + 8 + length;
     if (chunkEnd > bytes.length) return false;
-    if (label === "VP8 " && length >= 10) {
-      sawImageChunk = bytes[offset + 11] === 0x9d && bytes[offset + 12] === 0x01 && bytes[offset + 13] === 0x2a;
-    } else if (label === "VP8L" && length >= 5) {
-      sawImageChunk = bytes[offset + 8] === 0x2f;
+    if (label === "VP8 " || label === "VP8L") {
+      sawImageChunk ||= validWebpImageChunk(bytes, view, offset, label, length);
     } else if (label === "VP8X" && length === 10) {
-      sawImageChunk = true;
+      const width = uint24LittleEndian(bytes, offset + 12) + 1;
+      const height = uint24LittleEndian(bytes, offset + 15) + 1;
+      if (!validImageDimensions(width, height)) return false;
+    } else if (label === "ANMF" && length >= 24) {
+      const nestedOffset = offset + 24;
+      const nestedLabel = bytesLabel(bytes, nestedOffset, 4);
+      const nestedLength = view.getUint32(nestedOffset + 4, true);
+      if (nestedOffset + 8 + nestedLength > chunkEnd) return false;
+      sawImageChunk ||= validWebpImageChunk(
+        bytes,
+        view,
+        nestedOffset,
+        nestedLabel,
+        nestedLength,
+      );
     }
     offset = chunkEnd + (length % 2);
   }
@@ -215,10 +263,13 @@ export async function GET(request: Request) {
     await ensureWardrobeTables(db);
     await cleanupPendingImages(db);
     const result = await db
-      .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? ORDER BY created_at DESC LIMIT 200")
+      .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? ORDER BY created_at DESC")
       .bind(owner)
       .all<Record<string, unknown>>();
-    return Response.json({ items: result.results.map(rowToItem) });
+    return Response.json(
+      { items: result.results.map(rowToItem), limit: MAX_WARDROBE_ITEMS },
+      { headers: PRIVATE_JSON_HEADERS },
+    );
   } catch {
     return Response.json({ error: "wardrobe temporarily unavailable" }, { status: 503 });
   }
@@ -230,6 +281,23 @@ export async function POST(request: Request) {
     if (!owner) return unauthorizedJson();
     if (!request.headers.get("content-type")?.toLowerCase().includes("multipart/form-data")) {
       return Response.json({ error: "multipart form data is required" }, { status: 415 });
+    }
+    const declaredLength = Number(request.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_MULTIPART_BYTES) {
+      return Response.json({ error: "request is too large" }, { status: 413 });
+    }
+    const db = await getRawDb();
+    await ensureWardrobeTables(db);
+    await cleanupPendingImages(db);
+    const count = await db
+      .prepare("SELECT COUNT(*) AS total FROM wardrobe_items WHERE owner_email = ?")
+      .bind(owner)
+      .first<{ total: number }>();
+    if (Number(count?.total ?? 0) >= MAX_WARDROBE_ITEMS) {
+      return Response.json(
+        { error: `wardrobe limit reached (${MAX_WARDROBE_ITEMS})`, limit: MAX_WARDROBE_ITEMS },
+        { status: 409 },
+      );
     }
     let form: FormData;
     try {
@@ -258,9 +326,6 @@ export async function POST(request: Request) {
       return Response.json({ error: "invalid garment measurement" }, { status: 400 });
     }
 
-    const db = await getRawDb();
-    await ensureWardrobeTables(db);
-    await cleanupPendingImages(db);
     const id = `w-${crypto.randomUUID()}`;
     const photo = form.get("photo");
     let imageKey: string | null = null;
@@ -304,18 +369,33 @@ export async function POST(request: Request) {
     };
 
     try {
-      await db
+      const insertResult = await db
         .prepare(`INSERT INTO wardrobe_items (
           id, owner_email, name, category, color, color_name, size, source, source_url,
           image_key, image_type, season, style, chest, waist, hips, length, confidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE (SELECT COUNT(*) FROM wardrobe_items WHERE owner_email = ?) < ?`)
         .bind(
           values.id, values.owner, values.name, values.category, values.color, values.colorName,
           values.size, values.source, values.sourceUrl, values.imageKey, values.imageType,
           values.season, values.style, values.chest, values.waist, values.hips, values.length,
-          values.confidence,
+          values.confidence, owner, MAX_WARDROBE_ITEMS,
         )
         .run();
+      if (insertResult.meta.changes !== 1) {
+        if (imageKey) {
+          try {
+            await (await getWardrobeImages()).delete(imageKey);
+            await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
+          } catch {
+            // The durable cleanup row remains so a later request can safely retry.
+          }
+        }
+        return Response.json(
+          { error: `wardrobe limit reached (${MAX_WARDROBE_ITEMS})`, limit: MAX_WARDROBE_ITEMS },
+          { status: 409 },
+        );
+      }
     } catch (error) {
       if (imageKey) {
         try {
@@ -364,14 +444,67 @@ export async function DELETE(request: Request) {
   try {
     const owner = ownerForRequest(request);
     if (!owner) return unauthorizedJson();
-    const id = new URL(request.url).searchParams.get("id")?.trim();
-    if (!id) return Response.json({ error: "id is required" }, { status: 400 });
+    const searchParams = new URL(request.url).searchParams;
+    const id = searchParams.get("id")?.trim();
+    const deleteAll = searchParams.get("scope") === "all";
+    if (!id && !deleteAll) return Response.json({ error: "id is required" }, { status: 400 });
     const db = await getRawDb();
     await ensureWardrobeTables(db);
     await cleanupPendingImages(db);
+
+    if (deleteAll) {
+      const [items, orphanedImages] = await Promise.all([
+        db
+          .prepare("SELECT id, image_key FROM wardrobe_items WHERE owner_email = ?")
+          .bind(owner)
+          .all<{ id: string; image_key: string | null }>(),
+        db
+          .prepare(`SELECT image_key FROM wardrobe_image_cleanup
+            WHERE owner_email = ? AND created_at <= datetime('now', '-10 minutes')`)
+          .bind(owner)
+          .all<{ image_key: string }>(),
+      ]);
+      const itemIds = items.results.map((row) => row.id);
+      const orphanedKeys = orphanedImages.results.map((row) => row.image_key);
+      const imageKeys = [
+        ...new Set([
+          ...items.results.flatMap((row) => (row.image_key ? [row.image_key] : [])),
+          ...orphanedKeys,
+        ]),
+      ];
+      const images = await getWardrobeImages();
+      for (let start = 0; start < imageKeys.length; start += 1000) {
+        await images.delete(imageKeys.slice(start, start + 1000));
+      }
+
+      const statements: D1PreparedStatement[] = [];
+      for (let start = 0; start < itemIds.length; start += 99) {
+        const ids = itemIds.slice(start, start + 99);
+        statements.push(
+          db
+            .prepare(
+              `DELETE FROM wardrobe_items WHERE owner_email = ? AND id IN (${ids.map(() => "?").join(", ")})`,
+            )
+            .bind(owner, ...ids),
+        );
+      }
+      for (let start = 0; start < orphanedKeys.length; start += 99) {
+        const keys = orphanedKeys.slice(start, start + 99);
+        statements.push(
+          db
+            .prepare(
+              `DELETE FROM wardrobe_image_cleanup WHERE owner_email = ? AND image_key IN (${keys.map(() => "?").join(", ")})`,
+            )
+            .bind(owner, ...keys),
+        );
+      }
+      if (statements.length) await db.batch(statements);
+      return new Response(null, { status: 204 });
+    }
+
     const found = await db
       .prepare("SELECT image_key FROM wardrobe_items WHERE owner_email = ? AND id = ?")
-      .bind(owner, id)
+      .bind(owner, id!)
       .first<{ image_key: string | null }>();
     if (found?.image_key) {
       try {
@@ -380,7 +513,7 @@ export async function DELETE(request: Request) {
         return Response.json({ error: "image deletion temporarily unavailable" }, { status: 503 });
       }
     }
-    await db.prepare("DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ?").bind(owner, id).run();
+    await db.prepare("DELETE FROM wardrobe_items WHERE owner_email = ? AND id = ?").bind(owner, id!).run();
     return new Response(null, { status: 204 });
   } catch {
     return Response.json({ error: "wardrobe temporarily unavailable" }, { status: 503 });

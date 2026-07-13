@@ -17,7 +17,8 @@ export async function GET(request: Request) {
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set("content-type", row.image_type || headers.get("content-type") || "application/octet-stream");
-    headers.set("cache-control", "private, max-age=3600");
+    headers.set("cache-control", "private, no-store");
+    headers.set("x-content-type-options", "nosniff");
     headers.set("etag", object.httpEtag);
     return new Response(object.body, { headers });
   } catch {

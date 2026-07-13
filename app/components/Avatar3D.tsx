@@ -17,11 +17,19 @@ export type BodyMetrics = {
   bodyShape: "straight" | "pear" | "hourglass" | "inverted" | "apple";
 };
 
+export type AvatarGarment = {
+  color: string;
+  chest?: number;
+  waist?: number;
+  hips?: number;
+  length?: number;
+};
+
 export type AvatarOutfit = {
-  top?: string;
-  bottom?: string;
-  dress?: string;
-  outerwear?: string;
+  top?: AvatarGarment;
+  bottom?: AvatarGarment;
+  dress?: AvatarGarment;
+  outerwear?: AvatarGarment;
 };
 
 type CameraView = "front" | "angle" | "side" | "back";
@@ -62,6 +70,27 @@ function useDebouncedValue<T>(value: T, delay: number) {
     return () => window.clearTimeout(timer);
   }, [value, delay]);
   return debounced;
+}
+
+function measurementScale(
+  garmentValue: number | undefined,
+  bodyValue: number,
+  expectedEase: number,
+  min: number,
+  max: number,
+) {
+  if (!garmentValue) return 1;
+  return THREE.MathUtils.clamp(garmentValue / (bodyValue + expectedEase), min, max);
+}
+
+function lengthScale(
+  garmentLength: number | undefined,
+  referenceLength: number,
+  min: number,
+  max: number,
+) {
+  if (!garmentLength) return 1;
+  return THREE.MathUtils.clamp(garmentLength / referenceLength, min, max);
 }
 
 export function Avatar3D({
@@ -114,7 +143,7 @@ export function Avatar3D({
     const width = Math.max(mount.clientWidth, 280);
     const height = Math.max(mount.clientHeight, compact ? 390 : 520);
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const smallScreenQuery = window.matchMedia("(max-width: 768px)");
+    const smallScreenQuery = window.matchMedia("(max-width: 980px)");
     const reduceMotion = motionQuery.matches;
     const isSmallScreen = smallScreenQuery.matches;
     const navigatorWithHints = navigator as Navigator & {
@@ -140,7 +169,11 @@ export function Avatar3D({
     camera.position.set(...CAMERA_POSITIONS[cameraViewRef.current]);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: !lowPowerDevice, alpha: true });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !lowPowerDevice,
+      alpha: true,
+      powerPreference: lowPowerDevice ? "low-power" : "high-performance",
+    });
     cleanups.push(() => {
       renderer.dispose();
       renderer.forceContextLoss();
@@ -226,55 +259,164 @@ export function Avatar3D({
     );
 
     if (sceneOutfit.dress) {
-      const dressMaterial = material(sceneOutfit.dress, 0.78);
+      const dressChestScale = measurementScale(
+        sceneOutfit.dress.chest,
+        sceneMetrics.chest,
+        6,
+        0.86,
+        1.24,
+      );
+      const dressWaistScale = measurementScale(
+        sceneOutfit.dress.waist,
+        sceneMetrics.waist,
+        5,
+        0.86,
+        1.28,
+      );
+      const dressHipScale = measurementScale(
+        sceneOutfit.dress.hips,
+        sceneMetrics.hips,
+        8,
+        0.86,
+        1.3,
+      );
+      const dressLengthScale = lengthScale(sceneOutfit.dress.length, 110, 0.72, 1.22);
+      const dressMaterial = material(sceneOutfit.dress.color, 0.78);
       avatar.add(
         mesh(
-          new THREE.CylinderGeometry(0.76 * chestWidth, 0.78 * waistWidth, 1.45, 40),
+          new THREE.CylinderGeometry(
+            0.76 * chestWidth * dressChestScale,
+            0.78 * waistWidth * dressWaistScale,
+            1.45,
+            40,
+          ),
           dressMaterial,
           [0, 4.2, 0],
           [mass, torsoScale, 0.67 * mass],
         ),
         mesh(
-          new THREE.CylinderGeometry(0.78 * waistWidth, 1.12 * hipWidth, 2.12, 40),
+          new THREE.CylinderGeometry(
+            0.78 * waistWidth * dressWaistScale,
+            1.12 * hipWidth * dressHipScale,
+            2.12,
+            40,
+          ),
           dressMaterial,
-          [0, 2.75, 0],
-          [mass, 1, 0.69 * mass],
+          [0, 2.75 - (dressLengthScale - 1) * 0.72, 0],
+          [mass, dressLengthScale, 0.69 * mass],
         ),
       );
     } else {
       if (sceneOutfit.top) {
+        const topChestScale = measurementScale(
+          sceneOutfit.top.chest,
+          sceneMetrics.chest,
+          8,
+          0.84,
+          1.28,
+        );
+        const topWaistScale = measurementScale(
+          sceneOutfit.top.waist,
+          sceneMetrics.waist,
+          8,
+          0.84,
+          1.32,
+        );
+        const topLengthScale = lengthScale(sceneOutfit.top.length, 65, 0.68, 1.25);
         avatar.add(
           mesh(
-            new THREE.CylinderGeometry(0.77 * chestWidth, 0.78 * waistWidth, 1.64, 40),
-            material(sceneOutfit.top, 0.76),
-            [0, 4.22, 0],
-            [mass, torsoScale, 0.68 * mass],
+            new THREE.CylinderGeometry(
+              0.77 * chestWidth * topChestScale,
+              0.78 * waistWidth * topWaistScale,
+              1.64,
+              40,
+            ),
+            material(sceneOutfit.top.color, 0.76),
+            [0, 4.22 - (topLengthScale - 1) * 0.55, 0],
+            [mass, torsoScale * topLengthScale, 0.68 * mass],
           ),
         );
       }
       if (sceneOutfit.bottom) {
-        const bottomMaterial = material(sceneOutfit.bottom, 0.8);
+        const bottomWaistScale = measurementScale(
+          sceneOutfit.bottom.waist,
+          sceneMetrics.waist,
+          4,
+          0.86,
+          1.3,
+        );
+        const bottomHipScale = measurementScale(
+          sceneOutfit.bottom.hips,
+          sceneMetrics.hips,
+          6,
+          0.86,
+          1.3,
+        );
+        const bottomLengthScale = lengthScale(sceneOutfit.bottom.length, 100, 0.58, 1.16);
+        const bottomMaterial = material(sceneOutfit.bottom.color, 0.8);
         avatar.add(
-          mesh(new THREE.CapsuleGeometry(0.28 * mass, 2.1, 8, 18), bottomMaterial, [-0.35 * hipWidth, 1.55, 0], [1.05, legScale, 1.08]),
-          mesh(new THREE.CapsuleGeometry(0.28 * mass, 2.1, 8, 18), bottomMaterial, [0.35 * hipWidth, 1.55, 0], [1.05, legScale, 1.08]),
-          mesh(new THREE.CylinderGeometry(0.76 * waistWidth, 0.94 * hipWidth, 0.94, 36), bottomMaterial, [0, 3.08, 0], [mass, 1, 0.7 * mass]),
+          mesh(
+            new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
+            bottomMaterial,
+            [-0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
+            [1.05, legScale * bottomLengthScale, 1.08],
+          ),
+          mesh(
+            new THREE.CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, 8, 18),
+            bottomMaterial,
+            [0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
+            [1.05, legScale * bottomLengthScale, 1.08],
+          ),
+          mesh(
+            new THREE.CylinderGeometry(
+              0.76 * waistWidth * bottomWaistScale,
+              0.94 * hipWidth * bottomHipScale,
+              0.94,
+              36,
+            ),
+            bottomMaterial,
+            [0, 3.08, 0],
+            [mass, 1, 0.7 * mass],
+          ),
         );
       }
     }
 
     if (sceneOutfit.outerwear) {
+      const coatChestScale = measurementScale(
+        sceneOutfit.outerwear.chest,
+        sceneMetrics.chest,
+        12,
+        0.86,
+        1.3,
+      );
+      const coatHipScale = measurementScale(
+        sceneOutfit.outerwear.hips,
+        sceneMetrics.hips,
+        12,
+        0.86,
+        1.32,
+      );
+      const coatLengthScale = lengthScale(sceneOutfit.outerwear.length, 82, 0.68, 1.28);
       const coatMaterial = new THREE.MeshStandardMaterial({
-        color: sceneOutfit.outerwear,
+        color: sceneOutfit.outerwear.color,
         roughness: 0.74,
         transparent: true,
         opacity: 0.93,
       });
       avatar.add(
         mesh(
-          new THREE.CylinderGeometry(0.85 * shoulderWidth, 0.98 * hipWidth, 2.92, 40, 1, true),
+          new THREE.CylinderGeometry(
+            0.85 * shoulderWidth * coatChestScale,
+            0.98 * hipWidth * coatHipScale,
+            2.92,
+            40,
+            1,
+            true,
+          ),
           coatMaterial,
-          [0, 3.68, -0.02],
-          [mass, 1, 0.73 * mass],
+          [0, 3.68 - (coatLengthScale - 1) * 0.78, -0.02],
+          [mass, coatLengthScale, 0.73 * mass],
         ),
       );
     }
@@ -443,7 +585,14 @@ export function Avatar3D({
         setRenderFailed(false);
         if (focusOnReadyRef.current) {
           focusOnReadyRef.current = false;
-          window.requestAnimationFrame(() => viewSwitcherRef.current?.focus());
+          const focusFrame = window.requestAnimationFrame(() => {
+            if (document.activeElement === document.body) {
+              viewSwitcherRef.current
+                ?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')
+                ?.focus();
+            }
+          });
+          cleanups.push(() => window.cancelAnimationFrame(focusFrame));
         }
       }, 0);
       cleanups.push(() => window.clearTimeout(successTimer));
@@ -473,7 +622,13 @@ export function Avatar3D({
   useEffect(() => {
     if (renderFailed || !focusAfterRetryRef.current) return;
     focusAfterRetryRef.current = false;
-    const frame = window.requestAnimationFrame(() => viewSwitcherRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      if (document.activeElement === document.body) {
+        viewSwitcherRef.current
+          ?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')
+          ?.focus();
+      }
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [renderFailed]);
 

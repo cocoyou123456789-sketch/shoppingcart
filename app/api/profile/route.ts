@@ -1,6 +1,8 @@
 import { getRawDb } from "../../../db";
 import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
 
+const PRIVATE_JSON_HEADERS = { "cache-control": "private, no-store" };
+
 async function ensureProfileTable(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS body_profiles (
     owner_email TEXT PRIMARY KEY NOT NULL,
@@ -28,21 +30,24 @@ export async function GET(request: Request) {
       .prepare("SELECT * FROM body_profiles WHERE owner_email = ?")
       .bind(owner)
       .first<Record<string, unknown>>();
-    if (!row) return Response.json({ profile: null });
-    return Response.json({
-      profile: {
-        height: row.height,
-        weight: row.weight,
-        shoulder: row.shoulder,
-        chest: row.chest,
-        waist: row.waist,
-        hips: row.hips,
-        torso: row.torso,
-        legs: row.legs,
-        skinTone: row.skin_tone,
-        bodyShape: row.body_shape,
+    if (!row) return Response.json({ profile: null }, { headers: PRIVATE_JSON_HEADERS });
+    return Response.json(
+      {
+        profile: {
+          height: row.height,
+          weight: row.weight,
+          shoulder: row.shoulder,
+          chest: row.chest,
+          waist: row.waist,
+          hips: row.hips,
+          torso: row.torso,
+          legs: row.legs,
+          skinTone: row.skin_tone,
+          bodyShape: row.body_shape,
+        },
       },
-    });
+      { headers: PRIVATE_JSON_HEADERS },
+    );
   } catch {
     return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }
@@ -97,6 +102,19 @@ export async function PUT(request: Request) {
       )
       .run();
     return Response.json({ saved: true });
+  } catch {
+    return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const owner = ownerForRequest(request);
+    if (!owner) return unauthorizedJson();
+    const db = await getRawDb();
+    await ensureProfileTable(db);
+    await db.prepare("DELETE FROM body_profiles WHERE owner_email = ?").bind(owner).run();
+    return new Response(null, { status: 204 });
   } catch {
     return Response.json({ error: "profile temporarily unavailable" }, { status: 503 });
   }

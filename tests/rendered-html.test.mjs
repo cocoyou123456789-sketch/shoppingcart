@@ -58,8 +58,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
   assert.match(layout, /\/og\.jpg/);
   assert.match(app, /VIRTUAL SHOPPING/);
-  assert.match(app, /没有经过自动测量/);
-  assert.match(app, /不代表衣服的实际尺寸/);
+  assert.match(app, /不会凭一张照片猜测厘米数/);
+  assert.match(app, /只提取明确标注的尺寸/);
+  assert.match(app, /清除我的全部资料/);
   assert.match(app, /本机已保存/);
   assert.match(app, /Promise\.allSettled/);
   assert.match(app, /localSnapshotKey\(storageOwner\)/);
@@ -103,8 +104,10 @@ test("rejects anonymous reads and writes to private wardrobe APIs", async () => 
     ["/api/wardrobe", "GET"],
     ["/api/wardrobe", "POST"],
     ["/api/wardrobe?id=w-test", "DELETE"],
+    ["/api/wardrobe?scope=all", "DELETE"],
     ["/api/profile", "GET"],
     ["/api/profile", "PUT"],
+    ["/api/profile", "DELETE"],
     ["/api/wardrobe/image?id=w-test", "GET"],
   ]) {
     const response = await worker.fetch(

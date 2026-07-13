@@ -1,6 +1,14 @@
 "use client";
 
-import { Component, useEffect, useState, type ComponentType, type ReactNode } from "react";
+import {
+  Component,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 
 type AvatarProps = {
@@ -15,9 +23,15 @@ type IdleWindow = Window & {
   cancelIdleCallback?: (handle: number) => void;
 };
 
-function AvatarLoading({ compact = false }: { compact?: boolean }) {
+function AvatarLoading({
+  compact = false,
+  observeRef,
+}: {
+  compact?: boolean;
+  observeRef?: RefObject<HTMLDivElement | null>;
+}) {
   return (
-    <div className={`avatar-stage ${compact ? "avatar-stage--compact" : ""}`}>
+    <div ref={observeRef} className={`avatar-stage ${compact ? "avatar-stage--compact" : ""}`}>
       <div className="avatar-loading" role="status">
         <span aria-hidden="true" />
         <p>正在准备三维分身…</p>
@@ -83,16 +97,43 @@ export function DeferredAvatar({
   const [dataSaverPaused, setDataSaverPaused] = useState(false);
   const [forceLoad, setForceLoad] = useState(false);
   const [focusOnReady, setFocusOnReady] = useState(false);
+  const [nearViewport, setNearViewport] = useState(priority);
+  const loadingRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (priority || Avatar || failed) return;
+    const loading = loadingRef.current;
+    if (!loading || typeof IntersectionObserver === "undefined") {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setNearViewport(true);
+        observer.disconnect();
+      },
+      { rootMargin: "240px" },
+    );
+    observer.observe(loading);
+    return () => observer.disconnect();
+  }, [Avatar, attempt, failed, priority]);
+
+  useEffect(() => {
+    if (!priority && !nearViewport) return;
     let active = true;
     let idleHandle: number | undefined;
     let timer: number | undefined;
     const idleWindow = window as IdleWindow;
 
-    const saveData = Boolean(
-      (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData,
-    );
+    const connection = (
+      navigator as Navigator & {
+        connection?: {
+          saveData?: boolean;
+        };
+      }
+    ).connection;
+    const saveData = Boolean(connection?.saveData);
     if (saveData && !forceLoad) {
       timer = window.setTimeout(() => setDataSaverPaused(true), 0);
       return () => {
@@ -102,6 +143,11 @@ export function DeferredAvatar({
     }
 
     const loadAvatar = () => {
+      if (!active) return;
+      if (connection?.saveData && !forceLoad) {
+        setDataSaverPaused(true);
+        return;
+      }
       void import("./Avatar3D")
         .then((module) => {
           if (!active) return;
@@ -129,7 +175,7 @@ export function DeferredAvatar({
       if (idleHandle !== undefined) idleWindow.cancelIdleCallback?.(idleHandle);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [attempt, forceLoad, priority]);
+  }, [attempt, forceLoad, nearViewport, priority]);
 
   if (dataSaverPaused && !forceLoad) {
     return (
@@ -157,7 +203,7 @@ export function DeferredAvatar({
       />
     );
   }
-  if (!Avatar) return <AvatarLoading compact={compact} />;
+  if (!Avatar) return <AvatarLoading compact={compact} observeRef={loadingRef} />;
   return (
     <AvatarErrorBoundary
       key={boundaryAttempt}
