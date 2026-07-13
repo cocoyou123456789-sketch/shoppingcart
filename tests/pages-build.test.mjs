@@ -13,6 +13,8 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   assert.doesNotMatch(html, /modulepreload[^>]+Avatar3D/i);
   assert.doesNotMatch(html, /modulepreload[^>]+AddGarmentDialog/i);
   assert.doesNotMatch(html, /modulepreload[^>]+garment-analysis/i);
+  assert.doesNotMatch(html, /modulepreload[^>]+wardrobe-photo/i);
+  assert.doesNotMatch(html, /modulepreload[^>]+(?:Shop|Closet|Studio|Daily)View/i);
 
   const assetPaths = [...html.matchAll(/(?:src|href)="\/shoppingcart\/(assets\/[^"']+)"/g)]
     .map((match) => new URL(`../pages-dist/${match[1]}`, import.meta.url));
@@ -22,9 +24,20 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   const avatarAsset = assets.find((name) => /^Avatar3D-.+\.js$/.test(name));
   const addGarmentAsset = assets.find((name) => /^AddGarmentDialog-.+\.js$/.test(name));
   const garmentAnalysisAsset = assets.find((name) => /^garment-analysis-.+\.js$/.test(name));
+  const wardrobePhotoAsset = assets.find((name) => /^wardrobe-photo-.+\.js$/.test(name));
+  const lazyViewAssets = {
+    shop: assets.find((name) => /^ShopView-.+\.js$/.test(name)),
+    closet: assets.find((name) => /^ClosetView-.+\.js$/.test(name)),
+    studio: assets.find((name) => /^StudioView-.+\.js$/.test(name)),
+    daily: assets.find((name) => /^DailyView-.+\.js$/.test(name)),
+  };
   assert.ok(avatarAsset);
   assert.ok(addGarmentAsset);
   assert.ok(garmentAnalysisAsset);
+  assert.ok(wardrobePhotoAsset);
+  for (const [view, asset] of Object.entries(lazyViewAssets)) {
+    assert.ok(asset, `${view} view must have its own on-demand chunk`);
+  }
   const entryAsset = html.match(/src="\/shoppingcart\/assets\/([^"']+\.js)"/)?.[1];
   const cssAsset = html.match(/href="\/shoppingcart\/assets\/([^"']+\.css)"/)?.[1];
   assert.ok(entryAsset);
@@ -49,7 +62,7 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     const sizes = await Promise.all([...names].map(gzipBytes));
     return sizes.reduce((sum, size) => sum + size, 0);
   };
-  assert.ok(await gzipTotal(initialScripts) <= 90 * 1024, "initial JavaScript exceeded 90 KiB gzip");
+  assert.ok(await gzipTotal(initialScripts) <= 86 * 1024, "initial JavaScript exceeded 86 KiB gzip");
   assert.ok(await gzipTotal(initialStyles) <= 16 * 1024, "initial CSS exceeded 16 KiB gzip");
 
   const lazyPayloadBytes = async (rootAsset) => {
@@ -78,6 +91,16 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     await lazyPayloadBytes(garmentAnalysisAsset) <= 2 * 1024,
     "on-demand garment analysis exceeded 2 KiB gzip",
   );
+  assert.ok(
+    await lazyPayloadBytes(wardrobePhotoAsset) <= 2 * 1024,
+    "on-demand wardrobe photo preparation exceeded 2 KiB gzip",
+  );
+  for (const [view, asset] of Object.entries(lazyViewAssets)) {
+    assert.ok(
+      await lazyPayloadBytes(asset) <= 5 * 1024,
+      `${view} view exceeded 5 KiB gzip`,
+    );
+  }
 
   const entrySource = await readFile(
     new URL(`../pages-dist/assets/${entryAsset}`, import.meta.url),
@@ -89,6 +112,7 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   );
   const escapedAddGarmentAsset = addGarmentAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapedGarmentAsset = garmentAnalysisAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedWardrobePhotoAsset = wardrobePhotoAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.match(
     entrySource,
     new RegExp(escapedAddGarmentAsset),
@@ -103,6 +127,25 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     entrySource,
     new RegExp(escapedGarmentAsset),
     "entry must not load garment analysis before the dialog requests it",
+  );
+  assert.match(
+    entrySource,
+    new RegExp(escapedWardrobePhotoAsset),
+    "entry must reference the on-demand wardrobe photo preparation chunk",
+  );
+  assert.doesNotMatch(
+    entrySource,
+    /Photo encoding failed|wardrobe-photo\.jpg/,
+    "entry must not contain wardrobe photo preparation implementation",
+  );
+  for (const [view, asset] of Object.entries(lazyViewAssets)) {
+    const escapedAsset = asset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(entrySource, new RegExp(escapedAsset), `entry must reference lazy ${view} view`);
+  }
+  assert.doesNotMatch(
+    entrySource,
+    /VIRTUAL SHOPPING · 0 元体验|MY DIGITAL WARDROBE|3D FITTING STUDIO|TODAY(?:&apos;|')S OUTFIT/,
+    "entry must not contain non-home view implementation copy",
   );
   assert.match(addGarmentSource, /ADD TO WARDROBE/);
   assert.match(

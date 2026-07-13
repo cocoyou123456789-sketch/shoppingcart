@@ -8,7 +8,7 @@ import {
   requestDataGeneration,
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
-import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
+import { requireExpectedOwner } from "../../lib/request-owner";
 import { ensureProfileTable } from "../profile/route";
 import { ensureWardrobeTables } from "../wardrobe/route";
 
@@ -70,8 +70,9 @@ async function drainClearedImages(db: D1Database, owner: string, requestId: stri
 
 export async function DELETE(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner } = ownership;
     const expectedGeneration = requestDataGeneration(request);
     const requestId = requestClearOperationId(request);
     if (!expectedGeneration || !requestId) {

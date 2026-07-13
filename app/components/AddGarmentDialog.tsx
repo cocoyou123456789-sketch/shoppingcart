@@ -15,9 +15,12 @@ import {
   CLIENT_IMAGE_TYPES,
   CLOSET_CATEGORIES,
   MAX_CLIENT_IMAGE_BYTES,
+  MAX_GARMENT_NAME_LENGTH,
+  MAX_GARMENT_SOURCE_URL_LENGTH,
   SEASON_OPTIONS,
   STYLE_OPTIONS,
   colorNameFromHex,
+  isValidGarmentSourceUrl,
 } from "../lib/garment-form-options";
 import { useDialogAccessibility } from "../lib/use-dialog-accessibility";
 import type { ClosetCategory, WardrobeItem } from "../lib/muse-data";
@@ -39,6 +42,7 @@ export function AddGarmentDialog({
   };
   const dialogRef = useDialogAccessibility<HTMLDivElement>(closeWhenReady, returnFocusRef);
   const submitErrorRef = useRef<HTMLDivElement>(null);
+  const sourceUrlInputRef = useRef<HTMLInputElement>(null);
   const estimateTimer = useRef<number | null>(null);
   const estimateGeneration = useRef(0);
   const [mode, setMode] = useState<"photo" | "link" | "manual">("photo");
@@ -84,14 +88,19 @@ export function AddGarmentDialog({
     invalidateRecognizedMeasurements();
     if (
       file &&
-      (!CLIENT_IMAGE_TYPES.has(file.type.toLowerCase()) ||
+      (file.size === 0 ||
+        !CLIENT_IMAGE_TYPES.has(file.type.toLowerCase()) ||
         file.size > MAX_CLIENT_IMAGE_BYTES)
     ) {
       setPhoto(undefined);
       if (preview) URL.revokeObjectURL(preview);
       setPreview(undefined);
       setAnalyzed(false);
-      setImportError("请选择小于 6 MB 的 JPEG、PNG 或 WebP 图片。");
+      setImportError(
+        file.size === 0
+          ? "这张图片没有内容，请重新拍照或选择另一张图片。"
+          : "请选择小于 6 MB 的 JPEG、PNG 或 WebP 图片。",
+      );
       return;
     }
     setPhoto(file);
@@ -234,6 +243,12 @@ export function AddGarmentDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (submitting || analyzing) return;
+    const trimmedSourceUrl = sourceUrl.trim();
+    if (mode === "link" && !isValidGarmentSourceUrl(trimmedSourceUrl)) {
+      setImportError("请填写以 http:// 或 https:// 开头的商品链接。");
+      window.requestAnimationFrame(() => sourceUrlInputRef.current?.focus());
+      return;
+    }
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError("");
@@ -247,7 +262,7 @@ export function AddGarmentDialog({
           colorName: colorNameFromHex(color),
           size,
           source: "我的衣服",
-          sourceUrl: mode === "link" && sourceUrl ? sourceUrl : undefined,
+          sourceUrl: mode === "link" && trimmedSourceUrl ? trimmedSourceUrl : undefined,
           season,
           style,
           chest: chest ? Number(chest) : undefined,
@@ -416,11 +431,14 @@ export function AddGarmentDialog({
                   <div>
                     <span aria-hidden="true">↗</span>
                     <input
+                      ref={sourceUrlInputRef}
                       type="url"
                       placeholder="https://example.com/product"
                       value={sourceUrl}
-                      maxLength={1000}
+                      maxLength={MAX_GARMENT_SOURCE_URL_LENGTH}
                       required
+                      aria-invalid={importError ? true : undefined}
+                      aria-errormessage={importError ? "link-import-error" : undefined}
                       onChange={(event) => {
                         setSourceUrl(event.target.value);
                         invalidateRecognizedMeasurements();
@@ -475,6 +493,7 @@ export function AddGarmentDialog({
                 <input
                   value={name}
                   placeholder="例如：浅蓝落肩衬衫"
+                  maxLength={MAX_GARMENT_NAME_LENGTH}
                   onChange={(event) => setName(event.target.value)}
                   required
                 />

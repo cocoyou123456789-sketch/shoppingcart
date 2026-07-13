@@ -5,6 +5,7 @@ import {
   createVirtualWardrobeItem,
   supportsAvatarTryOn,
   wearWardrobeItem,
+  wearWardrobeItemAnnouncement,
 } from "../app/lib/try-on-state.mjs";
 
 function product(category, id = "item") {
@@ -80,6 +81,37 @@ test("wearing separates and dresses keeps their mutually exclusive outfit state"
   assert.deepEqual(
     wearWardrobeItem(separates, { id: "new-coat", category: "外套" }),
     { ...separates, outerwearId: "new-coat" },
+  );
+});
+
+test("try-on announcements expose automatic replacements and ordinary changes", () => {
+  assert.equal(
+    wearWardrobeItemAnnouncement(
+      { topId: "top", bottomId: "bottom", outerwearId: "coat" },
+      { id: "dress", name: "紫色连衣裙", category: "连衣裙" },
+    ),
+    "紫色连衣裙已穿上，并自动脱下原有上装和下装",
+  );
+  assert.equal(
+    wearWardrobeItemAnnouncement(
+      { dressId: "dress" },
+      { id: "top", name: "白衬衫", category: "上装" },
+    ),
+    "白衬衫已穿上，并自动脱下原有连衣裙",
+  );
+  assert.equal(
+    wearWardrobeItemAnnouncement(
+      { outerwearId: "old-coat" },
+      { id: "new-coat", name: "燕麦风衣", category: "外套" },
+    ),
+    "燕麦风衣已穿上，并替换原有外套",
+  );
+  assert.equal(
+    wearWardrobeItemAnnouncement(
+      {},
+      { id: "bottom", name: "绿色长裤", category: "下装" },
+    ),
+    "绿色长裤已穿上",
   );
 });
 

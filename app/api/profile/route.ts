@@ -6,7 +6,7 @@ import {
   requestDataGeneration,
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
-import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
+import { requireExpectedOwner } from "../../lib/request-owner";
 
 type ProfileRow = {
   height: number;
@@ -81,8 +81,9 @@ export async function ensureProfileTable(db: D1Database) {
 
 export async function GET(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner } = ownership;
     const db = await getRawDb();
     await ensureProfileTable(db);
     const generation = await currentDataGeneration(db, owner);
@@ -108,8 +109,9 @@ export async function GET(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner } = ownership;
     if (!request.headers.get("content-type")?.toLowerCase().includes("application/json")) {
       return Response.json({ error: "JSON is required" }, { status: 415 });
     }
@@ -224,8 +226,9 @@ export async function PUT(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner } = ownership;
     const db = await getRawDb();
     await ensureProfileTable(db);
     const requestedGeneration = requestDataGeneration(request);

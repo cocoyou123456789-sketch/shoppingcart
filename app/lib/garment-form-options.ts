@@ -14,6 +14,17 @@ export const SEASON_OPTIONS = ["四季", "春夏", "春秋"] as const;
 export const STYLE_OPTIONS = ["轻松", "利落", "温柔", "有点亮眼"] as const;
 export const CLIENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 export const MAX_CLIENT_IMAGE_BYTES = 6 * 1024 * 1024;
+export const MAX_GARMENT_NAME_LENGTH = 120;
+export const MAX_GARMENT_SOURCE_URL_LENGTH = 1000;
+
+export function isValidGarmentSourceUrl(value: string) {
+  if (!value.trim()) return true;
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
 
 export function colorNameFromHex(color: string) {
   const names: Record<string, string> = {

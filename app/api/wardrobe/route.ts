@@ -6,7 +6,15 @@ import {
   requestDataGeneration,
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
-import { ownerForRequest, unauthorizedJson } from "../../lib/request-owner";
+import {
+  EXPECTED_OWNER_QUERY,
+  requireExpectedOwner,
+} from "../../lib/request-owner";
+import {
+  MAX_GARMENT_NAME_LENGTH,
+  MAX_GARMENT_SOURCE_URL_LENGTH,
+  isValidGarmentSourceUrl,
+} from "../../lib/garment-form-options";
 import { isClientWardrobeId, wardrobeCloudId } from "../../lib/wardrobe-id.mjs";
 
 const ALLOWED_CATEGORIES = new Set(["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"]);
@@ -29,15 +37,6 @@ function measurement(value: FormDataEntryValue | null, min: number, max: number)
   return Number.isFinite(parsed) && parsed >= min && parsed <= max
     ? { ok: true, value: parsed }
     : { ok: false, value: null };
-}
-
-function validSourceUrl(value: string) {
-  if (!value) return true;
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
 }
 
 async function requestWithLimitedBody(request: Request, limit: number) {
@@ -304,7 +303,15 @@ async function cleanupPendingImages(db: D1Database) {
   }
 }
 
-function rowToItem(row: Record<string, unknown>) {
+function privateImageUrl(id: unknown, expectedOwner: string) {
+  const params = new URLSearchParams({
+    id: String(id),
+    [EXPECTED_OWNER_QUERY]: expectedOwner,
+  });
+  return `/api/wardrobe/image?${params}`;
+}
+
+function rowToItem(row: Record<string, unknown>, expectedOwner: string) {
   return {
     id: row.id,
     clientId: row.client_id ?? undefined,
@@ -315,7 +322,7 @@ function rowToItem(row: Record<string, unknown>) {
     size: row.size,
     source: row.source,
     sourceUrl: row.source_url ?? undefined,
-    imageUrl: row.image_key ? `/api/wardrobe/image?id=${encodeURIComponent(String(row.id))}` : undefined,
+    imageUrl: row.image_key ? privateImageUrl(row.id, expectedOwner) : undefined,
     season: row.season,
     style: row.style,
     chest: row.chest ?? undefined,
@@ -328,8 +335,9 @@ function rowToItem(row: Record<string, unknown>) {
 
 export async function GET(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner, expectedOwner } = ownership;
     const db = await getRawDb();
     await ensureWardrobeTables(db);
     const generation = await currentDataGeneration(db, owner);
@@ -346,7 +354,11 @@ export async function GET(request: Request) {
       .bind(owner)
       .all<Record<string, unknown>>();
     return Response.json(
-      { items: result.results.map(rowToItem), limit: MAX_WARDROBE_ITEMS, generation },
+      {
+        items: result.results.map((row) => rowToItem(row, expectedOwner)),
+        limit: MAX_WARDROBE_ITEMS,
+        generation,
+      },
       { headers: dataGenerationHeaders(generation) },
     );
   } catch {
@@ -356,8 +368,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner, expectedOwner } = ownership;
     if (!request.headers.get("content-type")?.toLowerCase().includes("multipart/form-data")) {
       return Response.json({ error: "multipart form data is required" }, { status: 415 });
     }
@@ -385,13 +398,13 @@ export async function POST(request: Request) {
     const category = String(form.get("category") ?? "");
     const color = String(form.get("color") ?? "#d7dff0");
     if (!name) return Response.json({ error: "name is required" }, { status: 400 });
-    if (name.length > 120) return Response.json({ error: "name is too long" }, { status: 400 });
+    if (name.length > MAX_GARMENT_NAME_LENGTH) return Response.json({ error: "name is too long" }, { status: 400 });
     if (!ALLOWED_CATEGORIES.has(category)) return Response.json({ error: "invalid category" }, { status: 400 });
     if (!/^#[0-9a-f]{6}$/i.test(color)) return Response.json({ error: "invalid color" }, { status: 400 });
 
     const sourceUrl = String(form.get("sourceUrl") ?? "").trim();
-    if (sourceUrl.length > 1000) return Response.json({ error: "source URL is too long" }, { status: 400 });
-    if (!validSourceUrl(sourceUrl)) return Response.json({ error: "invalid source URL" }, { status: 400 });
+    if (sourceUrl.length > MAX_GARMENT_SOURCE_URL_LENGTH) return Response.json({ error: "source URL is too long" }, { status: 400 });
+    if (!isValidGarmentSourceUrl(sourceUrl)) return Response.json({ error: "invalid source URL" }, { status: 400 });
     const measurements = {
       chest: measurement(form.get("chest"), 20, 250),
       waist: measurement(form.get("waist"), 20, 250),
@@ -434,7 +447,10 @@ export async function POST(request: Request) {
           .first<Record<string, unknown>>();
         if (existing) {
           return Response.json(
-            { item: rowToItem({ ...existing, client_id: clientId }), replayed: true },
+            {
+              item: rowToItem({ ...existing, client_id: clientId }, expectedOwner),
+              replayed: true,
+            },
             { status: 200, headers: dataGenerationHeaders(activeGeneration) },
           );
         }
@@ -454,7 +470,10 @@ export async function POST(request: Request) {
     let imageKey: string | null = null;
     let imageType: string | null = null;
 
-    if (photo instanceof File && photo.size > 0) {
+    if (photo instanceof File) {
+      if (photo.size === 0) {
+        return Response.json({ error: "photo must not be empty" }, { status: 400 });
+      }
       const validatedImageType = photo.type.toLowerCase();
       if (!ALLOWED_IMAGE_TYPES.has(validatedImageType) || photo.size > MAX_IMAGE_BYTES || !(await hasMatchingImageSignature(photo))) {
         return Response.json({ error: "photo must be a valid JPEG, PNG, or WebP smaller than 6 MB" }, { status: 400 });
@@ -573,7 +592,10 @@ export async function POST(request: Request) {
               .first<Record<string, unknown>>();
             if (replay) {
               return Response.json(
-                { item: rowToItem({ ...replay, client_id: clientId }), replayed: true },
+                {
+                  item: rowToItem({ ...replay, client_id: clientId }, expectedOwner),
+                  replayed: true,
+                },
                 { status: 200, headers: dataGenerationHeaders(latestGeneration) },
               );
             }
@@ -599,7 +621,10 @@ export async function POST(request: Request) {
         .first<Record<string, unknown>>();
       if (replay) {
         return Response.json(
-          { item: rowToItem({ ...replay, client_id: clientId }), replayed: true },
+          {
+            item: rowToItem({ ...replay, client_id: clientId }, expectedOwner),
+            replayed: true,
+          },
           { status: 200, headers: dataGenerationHeaders(requestedGeneration) },
         );
       }
@@ -628,7 +653,7 @@ export async function POST(request: Request) {
         size: values.size,
         source: values.source,
         sourceUrl: values.sourceUrl ?? undefined,
-        imageUrl: values.imageKey ? `/api/wardrobe/image?id=${encodeURIComponent(values.id)}` : undefined,
+        imageUrl: values.imageKey ? privateImageUrl(values.id, expectedOwner) : undefined,
         season: values.season,
         style: values.style,
         chest: values.chest ?? undefined,
@@ -645,8 +670,9 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const owner = ownerForRequest(request);
-    if (!owner) return unauthorizedJson();
+    const ownership = await requireExpectedOwner(request);
+    if ("response" in ownership) return ownership.response;
+    const { owner } = ownership;
     const searchParams = new URL(request.url).searchParams;
     const id = searchParams.get("id")?.trim();
     const requestedClientId = searchParams.get("clientId")?.trim();

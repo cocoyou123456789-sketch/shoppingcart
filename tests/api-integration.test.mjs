@@ -7,6 +7,8 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const origin = "http://localhost:4179";
 const generationHeader = "x-songsong-data-generation";
 const clearRequestHeader = "x-songsong-clear-request";
+const expectedOwnerHeader = "x-songsong-expected-owner";
+const sessionChangedHeader = "x-songsong-session-status";
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const validPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -24,6 +26,21 @@ function garmentForm() {
   form.set("style", "轻松");
   form.set("confidence", "中");
   return form;
+}
+
+async function expectedOwnerBinding(email) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`songsong-owner:${email.trim().toLowerCase()}`),
+  );
+  return Buffer.from(digest).toString("hex");
+}
+
+async function authenticatedHeaders(email) {
+  return {
+    "oai-authenticated-user-email": email,
+    [expectedOwnerHeader]: await expectedOwnerBinding(email),
+  };
 }
 
 async function waitForServer(child, logs) {
@@ -82,11 +99,62 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
   child.stderr.on("data", collect);
 
   const runId = crypto.randomUUID();
-  const userA = { "oai-authenticated-user-email": `a-${runId}@example.com` };
-  const userB = { "oai-authenticated-user-email": `b-${runId}@example.com` };
+  const userAEmail = `a-${runId}@example.com`;
+  const userBEmail = `b-${runId}@example.com`;
+  const userA = await authenticatedHeaders(userAEmail);
+  const userB = await authenticatedHeaders(userBEmail);
+  const staleAliceOnBob = {
+    ...userB,
+    [expectedOwnerHeader]: userA[expectedOwnerHeader],
+  };
 
   try {
     await waitForServer(child, logs);
+
+    const missingExpectedOwner = await fetch(`${origin}/api/profile`, {
+      headers: { "oai-authenticated-user-email": userAEmail },
+    });
+    assert.equal(missingExpectedOwner.status, 409);
+    assert.equal(missingExpectedOwner.headers.get(sessionChangedHeader), "changed");
+    assert.equal((await missingExpectedOwner.json()).code, "SESSION_CHANGED");
+
+    const signedOutStalePage = await fetch(`${origin}/api/profile`, {
+      headers: { [expectedOwnerHeader]: userA[expectedOwnerHeader] },
+    });
+    assert.equal(signedOutStalePage.status, 409);
+    assert.equal(signedOutStalePage.headers.get(sessionChangedHeader), "changed");
+
+    const staleSessionRequests = [
+      fetch(`${origin}/api/wardrobe`, { headers: staleAliceOnBob }),
+      fetch(`${origin}/api/wardrobe`, {
+        method: "POST",
+        headers: staleAliceOnBob,
+        body: garmentForm(),
+      }),
+      fetch(`${origin}/api/wardrobe?id=w-stale-session`, {
+        method: "DELETE",
+        headers: staleAliceOnBob,
+      }),
+      fetch(`${origin}/api/profile`, { headers: staleAliceOnBob }),
+      fetch(`${origin}/api/profile`, {
+        method: "PUT",
+        headers: { ...staleAliceOnBob, "content-type": "application/json" },
+        body: "{}",
+      }),
+      fetch(`${origin}/api/profile`, { method: "DELETE", headers: staleAliceOnBob }),
+      fetch(`${origin}/api/personal-data`, {
+        method: "DELETE",
+        headers: staleAliceOnBob,
+      }),
+      fetch(`${origin}/api/wardrobe/image?id=w-stale-session`, {
+        headers: staleAliceOnBob,
+      }),
+    ];
+    for (const response of await Promise.all(staleSessionRequests)) {
+      assert.equal(response.status, 409);
+      assert.equal(response.headers.get(sessionChangedHeader), "changed");
+      assert.equal((await response.json()).code, "SESSION_CHANGED");
+    }
 
     const malformedProfile = await fetch(`${origin}/api/profile`, {
       method: "PUT",
@@ -116,6 +184,16 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       body: "hello",
     });
     assert.equal(wrongGarmentType.status, 415);
+
+    const emptyImage = garmentForm();
+    emptyImage.set("photo", new Blob([], { type: "image/png" }), "empty.png");
+    const emptyImageResponse = await fetch(`${origin}/api/wardrobe`, {
+      method: "POST",
+      headers: userA,
+      body: emptyImage,
+    });
+    assert.equal(emptyImageResponse.status, 400);
+    assert.deepEqual(await emptyImageResponse.json(), { error: "photo must not be empty" });
 
     const oversizedRequest = await fetch(`${origin}/api/wardrobe`, {
       method: "POST",
@@ -306,6 +384,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const { item } = await createResponse.json();
     assert.match(item.id, /^w-[0-9a-f-]{36}$/);
     assert.notEqual(item.id, "w-client-controlled");
+    assert.match(item.imageUrl, /[?&]expectedOwner=[0-9a-f]{64}(?:&|$)/);
 
     const clientDraftId = `w-${crypto.randomUUID()}`;
     const idempotentForm = garmentForm();
@@ -450,12 +529,33 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.ok(!ownItems.items.some((entry) => entry.clientId === racingDeleteClientId));
     assert.ok(!otherItems.items.some((entry) => entry.id === item.id));
 
-    const ownImage = await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`, { headers: userA });
+    const ownImage = await fetch(`${origin}${item.imageUrl}`, {
+      headers: { "oai-authenticated-user-email": userAEmail },
+    });
+    const staleTabImageAfterAccountSwitch = await fetch(`${origin}${item.imageUrl}`, {
+      headers: { "oai-authenticated-user-email": userBEmail },
+    });
     const otherImage = await fetch(`${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`, { headers: userB });
     assert.equal(ownImage.status, 200);
+    assert.equal(staleTabImageAfterAccountSwitch.status, 409);
+    assert.equal(staleTabImageAfterAccountSwitch.headers.get(sessionChangedHeader), "changed");
     assert.equal(otherImage.status, 404);
-    assert.equal(ownImage.headers.get("cache-control"), "private, no-store");
+    assert.equal(ownImage.headers.get("cache-control"), "private, no-cache");
     assert.equal(ownImage.headers.get("x-content-type-options"), "nosniff");
+    const ownImageEtag = ownImage.headers.get("etag");
+    assert.ok(ownImageEtag);
+    const revalidatedImage = await fetch(
+      `${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`,
+      { headers: { ...userA, "if-none-match": `W/${ownImageEtag}` } },
+    );
+    assert.equal(revalidatedImage.status, 304);
+    assert.equal(revalidatedImage.headers.get("cache-control"), "private, no-cache");
+    assert.equal(await revalidatedImage.text(), "");
+    const crossOwnerRevalidation = await fetch(
+      `${origin}/api/wardrobe/image?id=${encodeURIComponent(item.id)}`,
+      { headers: { ...userB, "if-none-match": ownImageEtag } },
+    );
+    assert.equal(crossOwnerRevalidation.status, 404);
 
     const deleteResponse = await fetch(`${origin}/api/wardrobe?id=${encodeURIComponent(item.id)}`, { method: "DELETE", headers: userA });
     assert.equal(deleteResponse.status, 204);
@@ -482,6 +582,24 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.equal(clearBCreate.status, 201, logs.value);
     const clearAItem = (await clearACreate.json()).item;
     const clearBItem = (await clearBCreate.json()).item;
+
+    const staleTabClearAgainstBob = await fetch(`${origin}/api/personal-data`, {
+      method: "DELETE",
+      headers: {
+        ...staleAliceOnBob,
+        [generationHeader]: "initial",
+        [clearRequestHeader]: `clear-${crypto.randomUUID()}`,
+      },
+    });
+    assert.equal(staleTabClearAgainstBob.status, 409);
+    assert.equal(staleTabClearAgainstBob.headers.get(sessionChangedHeader), "changed");
+    const bobAfterRejectedClear = await fetch(`${origin}/api/wardrobe`, { headers: userB })
+      .then((response) => response.json());
+    assert.ok(bobAfterRejectedClear.items.some((entry) => entry.id === clearBItem.id));
+    assert.equal(
+      (await fetch(`${origin}/api/profile`, { headers: userB }).then((response) => response.json())).profile.height,
+      174,
+    );
 
     const clearRequestId = `clear-${crypto.randomUUID()}`;
     const racingGarments = Array.from({ length: 4 }, (_, index) => {
@@ -633,7 +751,7 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.equal(winningReplay.status, 204, logs.value);
     assert.equal(winningReplay.headers.get(generationHeader), secondGeneration);
 
-    const quotaUser = { "oai-authenticated-user-email": `quota-${runId}@example.com` };
+    const quotaUser = await authenticatedHeaders(`quota-${runId}@example.com`);
     const quotaReplayId = `w-${crypto.randomUUID()}`;
     for (let start = 0; start < 199; start += 20) {
       const count = Math.min(20, 199 - start);

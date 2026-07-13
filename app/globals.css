@@ -3272,6 +3272,7 @@ input[type="range"] {
 
 @media (max-width: 980px) {
   .topbar { grid-template-columns: 1fr auto; height: 70px; padding: 0 20px; }
+  .sync-state { display: inline-flex; }
   .desktop-nav { display: none; }
   .page { padding: 36px 20px 100px; }
   .hero-section { grid-template-columns: 1fr; padding: 20px 2% 40px; }
@@ -3320,7 +3321,7 @@ input[type="range"] {
 }
 
 @media (max-width: 680px) {
-  .brand small, .bag-button > span:not(:first-child), .top-actions .sync-state { display: none; }
+  .brand small, .bag-button > span:not(:first-child) { display: none; }
   .brand strong { font-size: 17px; }
   .external-update { align-items: stretch; flex-direction: column; gap: 12px; margin-top: 10px; max-width: calc(100% - 24px); padding: 14px; }
   .external-update__actions { display: grid; grid-template-columns: 1fr 1fr; }

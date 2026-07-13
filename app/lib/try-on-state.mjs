@@ -56,6 +56,36 @@ export function wearWardrobeItem(current, item) {
 }
 
 /**
+ * Describes the visible consequence of wearing an item, including the
+ * separates/dress exclusivity that would otherwise look like a silent removal.
+ *
+ * @param {{ topId?: string, bottomId?: string, dressId?: string, outerwearId?: string }} current
+ * @param {{ id: string, name?: string, category: string }} item
+ */
+export function wearWardrobeItemAnnouncement(current, item) {
+  const name = item.name?.trim() || "这件衣物";
+  if (item.category === "连衣裙") {
+    const removed = [current.topId && "上装", current.bottomId && "下装"].filter(Boolean);
+    if (removed.length) return `${name}已穿上，并自动脱下原有${removed.join("和")}`;
+    if (current.dressId && current.dressId !== item.id) return `${name}已穿上，并替换原有连衣裙`;
+  }
+  if (item.category === "上装") {
+    if (current.dressId) return `${name}已穿上，并自动脱下原有连衣裙`;
+    if (current.topId && current.topId !== item.id) return `${name}已穿上，并替换原有上装`;
+  }
+  if (item.category === "下装") {
+    if (current.dressId) return `${name}已穿上，并自动脱下原有连衣裙`;
+    if (current.bottomId && current.bottomId !== item.id) return `${name}已穿上，并替换原有下装`;
+  }
+  if (
+    item.category === "外套" &&
+    current.outerwearId &&
+    current.outerwearId !== item.id
+  ) return `${name}已穿上，并替换原有外套`;
+  return `${name}已穿上`;
+}
+
+/**
  * @param {{ topId?: string, bottomId?: string, dressId?: string, outerwearId?: string }} outfit
  * @param {Array<{ id: string, category: string, color: string, chest?: number, waist?: number, hips?: number, length?: number }>} wardrobe
  */

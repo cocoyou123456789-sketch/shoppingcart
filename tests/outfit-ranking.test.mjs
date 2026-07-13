@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rankOutfitSelections } from "../app/lib/outfit-ranking.mjs";
+import {
+  nextOutfitRotationSeed,
+  rankOutfitSelections,
+} from "../app/lib/outfit-ranking.mjs";
 
 const item = (id, score) => ({ id, score });
 const scoreItem = (candidate) => candidate.score;
@@ -71,4 +74,12 @@ test("falls back to dresses and returns no incomplete suggestions", () => {
     scoreItem,
   });
   assert.deepEqual(incomplete, []);
+});
+
+test("outfit rotation advances only when the visible ordering can change", () => {
+  assert.equal(nextOutfitRotationSeed(4, 3), 5);
+  assert.equal(nextOutfitRotationSeed(4, 2), 5);
+  assert.equal(nextOutfitRotationSeed(4, 1), 4);
+  assert.equal(nextOutfitRotationSeed(4, 0), 4);
+  assert.equal(nextOutfitRotationSeed(Number.NaN, 3), 1);
 });

@@ -62,3 +62,18 @@ export function rankOutfitSelections({
 
   return looks.sort((left, right) => right.score - left.score || left.key.localeCompare(right.key));
 }
+
+/**
+ * Advances only when another ordering can actually be shown. Keeping this
+ * decision pure prevents a visually clickable “换一组” action from becoming
+ * a no-op when there is zero or one alternative outfit.
+ *
+ * @param {number} seed
+ * @param {number} alternativeCount
+ */
+export function nextOutfitRotationSeed(seed, alternativeCount) {
+  const currentSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : 0;
+  return Number.isSafeInteger(alternativeCount) && alternativeCount > 1
+    ? currentSeed + 1
+    : currentSeed;
+}
