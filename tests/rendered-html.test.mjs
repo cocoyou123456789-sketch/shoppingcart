@@ -37,6 +37,8 @@ test("server-renders the finished 松松逛 product", async () => {
   assert.match(html, /我的衣橱/);
   assert.match(html, /试穿间/);
   assert.match(html, /今日搭配/);
+  assert.match(html, /href="#main-content"[^>]*>跳到主要内容</);
+  assert.match(html, /<main[^>]+id="main-content"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
@@ -60,6 +62,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(page, /key=\{user\?\.email \?\? "device"\}/);
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
   assert.match(layout, /\/og\.jpg/);
+  assert.match(layout, /\/favicon-48\.png/);
   assert.match(app, /VIRTUAL SHOPPING/);
   assert.match(app, /不会凭一张照片猜测厘米数/);
   assert.match(app, /只提取明确标注的尺寸/);
@@ -68,7 +71,16 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /Promise\.allSettled/);
   assert.match(app, /localSnapshotKey\(storageOwner\)/);
   assert.match(app, /isClearedLocalSnapshot/);
-  assert.match(app, /inert=\{clearingData \? true : undefined\}/);
+  assert.match(app, /const backgroundInert = clearingData \|\| cartOpen \|\| addOpen \|\| celebrationOpen/);
+  assert.match(app, /inert=\{backgroundInert \? true : undefined\}/);
+  assert.match(app, /href="#main-content"/);
+  assert.match(app, /id="main-content"/);
+  assert.match(app, /className="product-grid">/);
+  assert.doesNotMatch(app, /className="product-grid"[^>]*aria-live/);
+  assert.match(app, /resultAnnouncement/);
+  assert.match(app, /deleteAndRestoreFocus/);
+  assert.match(app, /id="garment-submit-error"[\s\S]*role="alert"/);
+  assert.match(app, /aria-errormessage=\{importError/);
   assert.match(app, /浏览器阻止清除本机副本/);
   assert.match(app, /preservePersistedPhotos/);
   assert.match(app, /invalidateRecognizedMeasurements/);
@@ -97,6 +109,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /controls\.update\(deltaSeconds\)/);
   assert.match(avatar, /runtimeRef/);
   assert.match(avatar, /replaceRuntimeAvatar\(runtime, nextAvatar, disposeObject3D\)/);
+  assert.match(avatar, /createVisibleTimeBudget\(AVATAR_AUTO_ROTATE_MS\)/);
+  assert.match(avatar, /avatarPixelRatio/);
   assert.match(avatarRuntime, /disposeAvatar\(previousAvatar\)/);
   assert.match(avatarRuntime, /shadowMap\.needsUpdate = true/);
   assert.doesNotMatch(avatar, /\[sceneMetrics, sceneOutfit, compact, retryVersion\]/);
@@ -126,6 +140,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(personalDataRoute, /DELETE FROM wardrobe_items/);
   assert.match(styles, /\.save-button, \.icon-button, \.cart-list article > button \{ min-width: 44px; \}/);
   assert.match(styles, /\.choice-group legend[\s\S]*font-size: 12px;/);
+  assert.match(styles, /@media \(pointer: coarse\)/);
+  assert.match(styles, /\.skip-link:focus/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);
@@ -139,6 +155,30 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   await access(new URL("../drizzle/0003_smart_james_howlett.sql", import.meta.url));
   await access(new URL("../app/api/wardrobe/route.ts", import.meta.url));
   await access(new URL("../app/api/profile/route.ts", import.meta.url));
+});
+
+function relativeLuminance(hex) {
+  const channels = hex.match(/[0-9a-f]{2}/gi).map((value) => Number.parseInt(value, 16) / 255);
+  const [red, green, blue] = channels.map((value) =>
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+  );
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+function contrastRatio(foreground, background) {
+  const values = [relativeLuminance(foreground), relativeLuminance(background)];
+  return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
+}
+
+test("critical secondary text colors meet WCAG AA contrast", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const muted = styles.match(/--muted:\s*(#[0-9a-f]{6})/i)?.[1];
+  const pathCopy = styles.match(/\.path-card p \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i)?.[1];
+  assert.ok(muted);
+  assert.ok(pathCopy);
+  assert.ok(contrastRatio(muted, "#e5e9e1") >= 4.5);
+  assert.ok(contrastRatio(pathCopy, "#e7c7bb") >= 4.5);
+  assert.ok(contrastRatio(pathCopy, "#cbc7dd") >= 4.5);
 });
 
 test("rejects anonymous reads and writes to private wardrobe APIs", async () => {

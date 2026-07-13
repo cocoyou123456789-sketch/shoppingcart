@@ -10,6 +10,7 @@ import {
   type RefObject,
 } from "react";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
+import { avatarLoadPolicy } from "../lib/avatar-loading.mjs";
 
 type AvatarProps = {
   metrics: BodyMetrics;
@@ -53,13 +54,21 @@ function AvatarLoadError({ compact = false, onRetry }: { compact?: boolean; onRe
   );
 }
 
-function AvatarDataSaver({ compact = false, onLoad }: { compact?: boolean; onLoad: () => void }) {
+function AvatarDataSaver({
+  compact = false,
+  reason,
+  onLoad,
+}: {
+  compact?: boolean;
+  reason: "network" | "device";
+  onLoad: () => void;
+}) {
   return (
     <div className={`avatar-stage ${compact ? "avatar-stage--compact" : ""}`}>
       <div className="avatar-unavailable" role="status">
         <span aria-hidden="true">◌</span>
         <strong>已为你暂停自动加载 3D</strong>
-        <p>检测到省流量模式；衣橱和搭配仍可正常使用。</p>
+        <p>{reason === "network" ? "检测到较慢网络或省流量模式" : "检测到设备资源较为有限"}；衣橱和搭配仍可正常使用。</p>
         <button type="button" className="button button--soft" onClick={onLoad}>仍要加载 3D</button>
       </div>
     </div>
@@ -95,6 +104,7 @@ export function DeferredAvatar({
   const [attempt, setAttempt] = useState(0);
   const [boundaryAttempt, setBoundaryAttempt] = useState(0);
   const [dataSaverPaused, setDataSaverPaused] = useState(false);
+  const [pauseReason, setPauseReason] = useState<"network" | "device">("network");
   const [forceLoad, setForceLoad] = useState(false);
   const [focusOnReady, setFocusOnReady] = useState(false);
   const [nearViewport, setNearViewport] = useState(priority);
@@ -130,12 +140,25 @@ export function DeferredAvatar({
       navigator as Navigator & {
         connection?: {
           saveData?: boolean;
+          effectiveType?: string;
         };
+        deviceMemory?: number;
       }
     ).connection;
-    const saveData = Boolean(connection?.saveData);
-    if (saveData && !forceLoad) {
-      timer = window.setTimeout(() => setDataSaverPaused(true), 0);
+    const policyInput = {
+      forceLoad,
+      priority,
+      saveData: Boolean(connection?.saveData),
+      effectiveType: connection?.effectiveType,
+      deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+    };
+    const policy = avatarLoadPolicy(policyInput);
+    if (policy.mode === "pause") {
+      timer = window.setTimeout(() => {
+        setPauseReason(policy.reason ?? "network");
+        setDataSaverPaused(true);
+      }, 0);
       return () => {
         active = false;
         if (timer !== undefined) window.clearTimeout(timer);
@@ -144,7 +167,13 @@ export function DeferredAvatar({
 
     const loadAvatar = () => {
       if (!active) return;
-      if (connection?.saveData && !forceLoad) {
+      const currentPolicy = avatarLoadPolicy({
+        ...policyInput,
+        saveData: Boolean(connection?.saveData),
+        effectiveType: connection?.effectiveType,
+      });
+      if (currentPolicy.mode === "pause") {
+        setPauseReason(currentPolicy.reason ?? "network");
         setDataSaverPaused(true);
         return;
       }
@@ -162,12 +191,14 @@ export function DeferredAvatar({
         });
     };
 
-    if (priority) {
+    if (policy.mode === "immediate") {
       loadAvatar();
+    } else if (policy.delayMs > 800) {
+      timer = window.setTimeout(loadAvatar, policy.delayMs);
     } else if (idleWindow.requestIdleCallback) {
-      idleHandle = idleWindow.requestIdleCallback(loadAvatar, { timeout: 800 });
+      idleHandle = idleWindow.requestIdleCallback(loadAvatar, { timeout: policy.delayMs });
     } else {
-      timer = window.setTimeout(loadAvatar, 800);
+      timer = window.setTimeout(loadAvatar, policy.delayMs);
     }
 
     return () => {
@@ -181,6 +212,7 @@ export function DeferredAvatar({
     return (
       <AvatarDataSaver
         compact={compact}
+        reason={pauseReason}
         onLoad={() => {
           setDataSaverPaused(false);
           setForceLoad(true);
@@ -197,6 +229,7 @@ export function DeferredAvatar({
         onRetry={() => {
           setAvatar(null);
           setFailed(false);
+          setForceLoad(true);
           setFocusOnReady(true);
           setAttempt((current) => current + 1);
         }}

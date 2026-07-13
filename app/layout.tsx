@@ -19,8 +19,9 @@ export async function generateMetadata(): Promise<Metadata> {
     title: "松松逛｜虚拟购物与数字衣橱",
     description: "不用真钱也能轻松逛；创建可调节的三维分身，录入自己的衣服，试穿并生成每日搭配。",
     icons: {
-      icon: "/favicon.png",
-      shortcut: "/favicon.png",
+      icon: "/favicon-48.png",
+      shortcut: "/favicon-48.png",
+      apple: "/favicon.png",
     },
     openGraph: {
       title: "松松逛｜喜欢就先在这里拥有",

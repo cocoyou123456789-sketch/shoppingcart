@@ -473,7 +473,10 @@ function isClearedLocalSnapshot(storageKey: string) {
   }
 }
 
-function useDialogAccessibility<T extends HTMLElement>(onClose: () => void) {
+function useDialogAccessibility<T extends HTMLElement>(
+  onClose: () => void,
+  returnFocusRef?: React.RefObject<HTMLElement | null>,
+) {
   const dialogRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
 
@@ -487,6 +490,7 @@ function useDialogAccessibility<T extends HTMLElement>(onClose: () => void) {
     const previouslyFocused = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
+    const configuredReturnTarget = returnFocusRef?.current ?? null;
     const selector = [
       "button:not([disabled])",
       "input:not([disabled])",
@@ -540,9 +544,18 @@ function useDialogAccessibility<T extends HTMLElement>(onClose: () => void) {
       window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
-      previouslyFocused?.focus();
+      const returnTarget = returnFocusRef ? configuredReturnTarget : previouslyFocused;
+      window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (
+          !returnTarget?.isConnected ||
+          returnTarget.closest("[inert]") ||
+          (active instanceof HTMLElement && active !== document.body)
+        ) return;
+        returnTarget.focus();
+      });
     };
-  }, []);
+  }, [returnFocusRef]);
 
   return dialogRef;
 }
@@ -634,6 +647,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
   const storageWarningShown = useRef(false);
   const storageFailureShown = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
+  const dialogOpenerRef = useRef<HTMLElement | null>(null);
   const previousView = useRef<View>(view);
   const cloudItemIds = useRef(new Set<string>());
   const cartProductIds = useRef(new Set<string>());
@@ -1344,7 +1358,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 2600);
+    const timer = window.setTimeout(() => setToast(""), 5000);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -1587,10 +1601,11 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     }
   }
 
-  async function addWardrobeItem(item: WardrobeItem, photo?: File) {
+  async function addWardrobeItem(item: WardrobeItem, photo?: File): Promise<string | null> {
     if (wardrobe.length >= MAX_WARDROBE_ITEMS) {
-      setToast(`衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件再添加`);
-      return;
+      const message = `衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件再添加`;
+      setToast(message);
+      return message;
     }
     const requestEpoch = mutationEpoch.current;
     const addToDevice = async () => {
@@ -1615,22 +1630,24 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           { method: "POST", body: wardrobeItemForm(item, photo) },
           CLOUD_UPLOAD_TIMEOUT_MS,
         );
-        if (mutationEpoch.current !== requestEpoch) return;
-        if (response.status === 409 && adoptStaleCloudGeneration(response)) return;
+        if (mutationEpoch.current !== requestEpoch) return null;
+        if (response.status === 409 && adoptStaleCloudGeneration(response)) return null;
         if (response.status === 409) {
-          setToast(`云端衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件`);
-          return;
+          const message = `云端衣橱最多保存 ${MAX_WARDROBE_ITEMS} 件，请先移除一件`;
+          setToast(message);
+          return message;
         }
         if (response.status === 410) {
-          setToast("这份衣物草稿已在其他标签页删除，请重新添加");
-          return;
+          const message = "这份衣物草稿已在其他标签页删除，请重新添加";
+          setToast(message);
+          return message;
         }
         if (!response.ok) {
-          if (adoptStaleCloudGeneration(response)) return;
+          if (adoptStaleCloudGeneration(response)) return null;
           throw new Error();
         }
         const data = (await response.json()) as { item: WardrobeItem };
-        if (mutationEpoch.current !== requestEpoch) return;
+        if (mutationEpoch.current !== requestEpoch) return null;
         cloudItemIds.current.add(data.item.id);
         setWardrobe((current) => [
           data.item,
@@ -1647,17 +1664,18 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
             : "云端已同步",
         );
       } catch {
-        if (mutationEpoch.current !== requestEpoch) return;
+        if (mutationEpoch.current !== requestEpoch) return null;
         photoSaved = await addToDevice();
       }
     }
-    if (mutationEpoch.current !== requestEpoch) return;
+    if (mutationEpoch.current !== requestEpoch) return null;
     setAddOpen(false);
     setToast(
       photoSaved
         ? "这件衣服已经住进你的衣橱"
         : "衣物资料已保存，但这张照片未能保存在本机",
     );
+    return null;
   }
 
   async function clearPersonalData() {
@@ -1850,13 +1868,16 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
     }
   }
 
+  const backgroundInert = clearingData || cartOpen || addOpen || celebrationOpen;
+
   return (
     <>
       <div
         className="site-shell"
         aria-busy={clearingData}
-        inert={clearingData ? true : undefined}
+        inert={backgroundInert ? true : undefined}
       >
+      <a className="skip-link" href="#main-content">跳到主要内容</a>
       <header className="topbar">
         <button type="button" className="brand" disabled={!ready} onClick={() => navigate("home")} aria-label="回到松松逛首页">
           <span className="brand-mark" aria-hidden="true">松</span>
@@ -1880,7 +1901,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <span role="status" className={`sync-state sync-state--${dataMode === "云端已同步" || dataMode === "本机已保存" ? "saved" : "demo"}`}>
             <span aria-hidden="true">●</span> {dataMode}
           </span>
-          <button type="button" className="bag-button" disabled={!ready} onClick={() => setCartOpen(true)} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>
+          <button type="button" className="bag-button" disabled={!ready} onClick={(event) => { dialogOpenerRef.current = event.currentTarget; setCartOpen(true); }} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>
             <span aria-hidden="true">▢</span>
             <span>虚拟购物袋</span>
             <b>{cart.length}</b>
@@ -1897,7 +1918,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           <span aria-hidden="true" /> 正在取回你的衣橱，完成前暂时不能编辑
         </div>
       )}
-      <main ref={mainRef} aria-busy={!ready} inert={ready ? undefined : true}>
+      <main id="main-content" ref={mainRef} tabIndex={-1} aria-busy={!ready} inert={ready ? undefined : true}>
         {view === "home" && (
           <HomeView
             metrics={metrics}
@@ -1926,7 +1947,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         {view === "closet" && (
           <ClosetView
             wardrobe={wardrobe}
-            onAdd={() => setAddOpen(true)}
+            onAdd={(opener) => { dialogOpenerRef.current = opener; setAddOpen(true); }}
             onDelete={deleteWardrobeItem}
             onClearData={clearPersonalData}
             clearingData={clearingData}
@@ -1981,6 +2002,7 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           </button>
         ))}
       </nav>
+      </div>
 
       {cartOpen && (
         <CartDrawer
@@ -1988,12 +2010,14 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
           onClose={() => setCartOpen(false)}
           onRemove={removeFromCart}
           onCheckout={checkout}
+          returnFocusRef={dialogOpenerRef}
         />
       )}
-      {addOpen && <AddGarmentDialog onClose={() => setAddOpen(false)} onAdd={addWardrobeItem} />}
+      {addOpen && <AddGarmentDialog onClose={() => setAddOpen(false)} onAdd={addWardrobeItem} returnFocusRef={dialogOpenerRef} />}
       {celebrationOpen && (
         <CelebrationDialog
           onClose={() => setCelebrationOpen(false)}
+          returnFocusRef={dialogOpenerRef}
           onCloset={() => {
             setCelebrationOpen(false);
             navigate("closet");
@@ -2001,7 +2025,6 @@ export function MuseApp({ storageOwner }: { storageOwner?: string } = {}) {
         />
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
-      </div>
       {clearingData && (
         <div className="data-clearing-status" role="status" aria-live="assertive">
           <p><span aria-hidden="true" /> 正在安全清除个人资料，请稍候</p>
@@ -2132,6 +2155,16 @@ function ShopView({
       (!query || product.name.includes(query) || product.colorName.includes(query)) &&
       (!savedOnly || saved.includes(product.id)),
   );
+  const [resultAnnouncement, setResultAnnouncement] = useState("");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const scope = savedOnly ? "收藏中" : category === "全部" ? "全部分类中" : `${category}分类中`;
+      const search = query.trim() ? `搜索“${query.trim()}”时，` : "";
+      setResultAnnouncement(`${search}${scope}找到 ${visible.length} 件虚拟商品`);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [category, query, savedOnly, visible.length]);
 
   return (
     <div className="page page--shop">
@@ -2146,7 +2179,10 @@ function ShopView({
           <button type="button" aria-pressed={savedOnly} className={savedOnly ? "is-active" : ""} onClick={() => setSavedOnly((current) => !current)}>♡ 收藏 {saved.length}</button>
         </div>
       </section>
-      <section className="product-grid" aria-live="polite">
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {resultAnnouncement}
+      </p>
+      <section className="product-grid">
         {visible.map((product) => (
           <article className="product-card" key={product.id}>
             <div className="product-image-wrap">
@@ -2176,18 +2212,39 @@ function ShopView({
   );
 }
 
-function ClosetView({ wardrobe, onAdd, onWear, onDelete, onClearData, clearingData }: { wardrobe: WardrobeItem[]; onAdd: () => void; onWear: (item: WardrobeItem) => void; onDelete: (item: WardrobeItem) => void; onClearData: () => void; clearingData: boolean }) {
+function ClosetView({ wardrobe, onAdd, onWear, onDelete, onClearData, clearingData }: { wardrobe: WardrobeItem[]; onAdd: (opener: HTMLButtonElement) => void; onWear: (item: WardrobeItem) => void; onDelete: (item: WardrobeItem) => Promise<void> | void; onClearData: () => void; clearingData: boolean }) {
   const [category, setCategory] = useState<(typeof CLOSET_CATEGORIES)[number]>("全部");
   const visible = wardrobe.filter((item) => category === "全部" || item.category === category);
   const previewableCount = wardrobe.filter((item) => supportsAvatarTryOn(item.category)).length;
   const completeness = wardrobe.length
     ? Math.round(wardrobe.reduce((sum, item) => sum + [item.size, item.color, item.season, item.style, item.chest ?? item.waist ?? item.length].filter(Boolean).length / 5, 0) / wardrobe.length * 100)
     : 0;
+
+  async function deleteAndRestoreFocus(
+    item: WardrobeItem,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) {
+    const button = event.currentTarget;
+    const grid = button.closest<HTMLElement>(".wardrobe-grid");
+    const buttonsBefore = grid
+      ? Array.from(grid.querySelectorAll<HTMLButtonElement>("button:not([disabled])"))
+      : [];
+    const focusIndex = Math.max(0, buttonsBefore.indexOf(button));
+    await onDelete(item);
+    window.requestAnimationFrame(() => {
+      if (button.isConnected || !grid?.isConnected) return;
+      const buttonsAfter = Array.from(
+        grid.querySelectorAll<HTMLButtonElement>("button:not([disabled])"),
+      );
+      buttonsAfter[Math.min(focusIndex, buttonsAfter.length - 1)]?.focus();
+    });
+  }
+
   return (
     <div className="page page--closet">
       <section className="page-title-row">
         <div><p className="eyebrow">MY DIGITAL WARDROBE</p><h1>我的衣橱</h1><p>{wardrobe.length} 件衣服，每一件都可以重新被搭配。</p></div>
-        <button type="button" className="button button--primary" onClick={onAdd}>＋ 添加一件衣服</button>
+        <button type="button" className="button button--primary" onClick={(event) => onAdd(event.currentTarget)}>＋ 添加一件衣服</button>
       </section>
       <section className="closet-summary">
         <div><span>可参与 3D 试穿</span><strong>{previewableCount}<small> 件</small></strong><p>支持上装、下装、连衣裙和外套</p></div>
@@ -2203,11 +2260,11 @@ function ClosetView({ wardrobe, onAdd, onWear, onDelete, onClearData, clearingDa
         <button type="button" className="button button--soft" disabled={clearingData} onClick={onClearData}>{clearingData ? "正在清除…" : "清除我的全部资料"}</button>
       </section>
       <section className="wardrobe-grid">
-        <button type="button" className="add-card" onClick={onAdd}><span>＋</span><strong>添加一件衣服</strong><small>拍照、链接或手动录入</small></button>
+        <button type="button" className="add-card" onClick={(event) => onAdd(event.currentTarget)}><span>＋</span><strong>添加一件衣服</strong><small>拍照、链接或手动录入</small></button>
         {visible.map((item) => (
           <article className="wardrobe-card" key={item.id}>
             <div className="wardrobe-visual"><span className={`source-pill ${item.source === "虚拟商品" ? "source-pill--virtual" : item.source === "示例衣物" ? "source-pill--sample" : ""}`}>{item.source}</span>{item.imageUrl ? <img src={item.imageUrl} alt={item.name} /> : <MiniGarment item={item} />}</div>
-            <div className="wardrobe-info"><div><span>{item.category} · {item.size}</span><i style={{ background: item.color }} /></div><h2>{item.name}</h2><p>{item.season} · {item.style}</p><div className="confidence-line"><span>资料可信度</span><b className={`confidence confidence--${item.confidence === "高" ? "high" : item.confidence === "中" ? "mid" : "low"}`}>{item.confidence}</b></div><div className="wardrobe-actions"><button type="button" className="button button--dark" onClick={() => onWear(item)} disabled={!supportsAvatarTryOn(item.category)}>{supportsAvatarTryOn(item.category) ? "穿上看看" : "暂不支持 3D"}</button><button type="button" className="remove-garment" onClick={() => onDelete(item)} aria-label={`从衣橱移除${item.name}`}>移除</button></div></div>
+            <div className="wardrobe-info"><div><span>{item.category} · {item.size}</span><i style={{ background: item.color }} /></div><h2>{item.name}</h2><p>{item.season} · {item.style}</p><div className="confidence-line"><span>资料可信度</span><b className={`confidence confidence--${item.confidence === "高" ? "high" : item.confidence === "中" ? "mid" : "low"}`}>{item.confidence}</b></div><div className="wardrobe-actions"><button type="button" className="button button--dark" onClick={() => onWear(item)} disabled={!supportsAvatarTryOn(item.category)}>{supportsAvatarTryOn(item.category) ? "穿上看看" : "暂不支持 3D"}</button><button type="button" className="remove-garment" onClick={(event) => void deleteAndRestoreFocus(item, event)} aria-label={`从衣橱移除${item.name}`}>移除</button></div></div>
           </article>
         ))}
       </section>
@@ -2396,6 +2453,9 @@ function DailyView({
         <ChoiceGroup label="舒适偏好" options={[...DAILY_OPTIONS.comfort]} value={comfort} onChange={(value) => onPreferencesChange("comfort", value)} />
         <button type="button" className="button button--primary" onClick={() => setSeed((current) => current + 1)}>✦ 换一组看看</button>
       </section>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        已按{weather}、{occasion}、{feeling}和{comfort}更新第 {seed + 1} 组搭配，共 {suggestions.length} 套
+      </p>
       <div className="suggestion-heading"><div><span>从 {wardrobe.length} 件衣服中组合</span><h2>为现在的你准备了 {suggestions.length} 套</h2></div><p>身高 {metrics.height} cm · 偏好「{comfort}」</p></div>
       {suggestions.length ? <section className="suggestion-grid">
         {suggestions.map(({ selection, key }, index) => {
@@ -2412,24 +2472,68 @@ function ChoiceGroup({ label, options, value, onChange }: { label: string; optio
   return <fieldset className="choice-group"><legend>{label}</legend><div>{options.map((option) => <button type="button" key={option} className={value === option ? "is-active" : ""} onClick={() => onChange(option)} aria-pressed={value === option}>{option}</button>)}</div></fieldset>;
 }
 
-function CartDrawer({ cart, onClose, onRemove, onCheckout }: { cart: Product[]; onClose: () => void; onRemove: (index: number) => void; onCheckout: () => void }) {
+function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { cart: Product[]; onClose: () => void; onRemove: (index: number) => void; onCheckout: () => void; returnFocusRef: React.RefObject<HTMLElement | null> }) {
   const total = cart.reduce((sum, item) => sum + item.points, 0);
-  const dialogRef = useDialogAccessibility<HTMLElement>(onClose);
-  return <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside ref={dialogRef} tabIndex={-1} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title"><div className="drawer-header"><div><p>VIRTUAL BAG</p><h2 id="cart-title">虚拟购物袋 <span>{cart.length}</span></h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭购物袋">×</button></div><div className="payment-reassurance"><span aria-hidden="true">♡</span><p><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div><div className="cart-list">{cart.length ? cart.map((item, index) => <article key={`${item.id}-${index}`}><div className="cart-thumb"><ProductVisual visual={item.visual} color={item.color} /></div><div><span>{item.category} · 虚拟商品</span><h3>{item.name}</h3><p>{item.points} 松松币</p></div><button type="button" onClick={() => onRemove(index)} aria-label={`移除${item.name}`}>×</button></article>) : <div className="cart-empty"><span>▢</span><h3>袋子还是轻轻的</h3><p>看到喜欢的再放进来，不急。</p></div>}</div><div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout}>完成这次虚拟购物</button><small>点击只会完成体验，不会提交付款或真实订单。</small></div></aside></div>;
+  const dialogRef = useDialogAccessibility<HTMLElement>(onClose, returnFocusRef);
+  const cartListRef = useRef<HTMLDivElement>(null);
+
+  function removeAndRestoreFocus(
+    index: number,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) {
+    const button = event.currentTarget;
+    onRemove(index);
+    window.requestAnimationFrame(() => {
+      if (button.isConnected) return;
+      const remainingButtons = Array.from(
+        cartListRef.current?.querySelectorAll<HTMLButtonElement>("article > button") ?? [],
+      );
+      const target = remainingButtons[Math.min(index, remainingButtons.length - 1)]
+        ?? dialogRef.current?.querySelector<HTMLElement>("#cart-title");
+      target?.focus();
+    });
+  }
+
+  return (
+    <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside ref={dialogRef} tabIndex={-1} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title">
+        <div className="drawer-header">
+          <div><p>VIRTUAL BAG</p><h2 id="cart-title" tabIndex={-1}>虚拟购物袋 <span>{cart.length}</span></h2></div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭购物袋">×</button>
+        </div>
+        <div className="payment-reassurance"><span aria-hidden="true">♡</span><p><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div>
+        <div ref={cartListRef} className="cart-list">
+          {cart.length ? cart.map((item, index) => (
+            <article key={`${item.id}-${index}`}>
+              <div className="cart-thumb"><ProductVisual visual={item.visual} color={item.color} /></div>
+              <div><span>{item.category} · 虚拟商品</span><h3>{item.name}</h3><p>{item.points} 松松币</p></div>
+              <button type="button" onClick={(event) => removeAndRestoreFocus(index, event)} aria-label={`移除${item.name}`}>×</button>
+            </article>
+          )) : (
+            <div className="cart-empty"><span aria-hidden="true">▢</span><h3>袋子还是轻轻的</h3><p>看到喜欢的再放进来，不急。</p></div>
+          )}
+        </div>
+        <div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout}>完成这次虚拟购物</button><small>点击只会完成体验，不会提交付款或真实订单。</small></div>
+      </aside>
+    </div>
+  );
 }
 
 function AddGarmentDialog({
   onClose,
   onAdd,
+  returnFocusRef,
 }: {
   onClose: () => void;
-  onAdd: (item: WardrobeItem, photo?: File) => Promise<void> | void;
+  onAdd: (item: WardrobeItem, photo?: File) => Promise<string | null> | string | null;
+  returnFocusRef: React.RefObject<HTMLElement | null>;
 }) {
   const submittingRef = useRef(false);
   const closeWhenReady = () => {
     if (!submittingRef.current) onClose();
   };
-  const dialogRef = useDialogAccessibility<HTMLDivElement>(closeWhenReady);
+  const dialogRef = useDialogAccessibility<HTMLDivElement>(closeWhenReady, returnFocusRef);
+  const submitErrorRef = useRef<HTMLDivElement>(null);
   const estimateTimer = useRef<number | null>(null);
   const [mode, setMode] = useState<"photo" | "link" | "manual">("photo");
   const [photo, setPhoto] = useState<File | undefined>();
@@ -2446,6 +2550,7 @@ function AddGarmentDialog({
   const [sourceUrl, setSourceUrl] = useState("");
   const [sizeChartText, setSizeChartText] = useState("");
   const [importError, setImportError] = useState("");
+  const [submitError, setSubmitError] = useState("");
   const [analysisMessage, setAnalysisMessage] = useState("");
   const [matchedMeasurements, setMatchedMeasurements] = useState<string[]>([]);
   const [chest, setChest] = useState("");
@@ -2597,8 +2702,9 @@ function AddGarmentDialog({
     if (submitting) return;
     submittingRef.current = true;
     setSubmitting(true);
+    setSubmitError("");
     try {
-      await onAdd(
+      const errorMessage = await onAdd(
         {
           id: `w-${crypto.randomUUID()}`,
           name: name.trim() || "未命名衣物",
@@ -2619,6 +2725,10 @@ function AddGarmentDialog({
         },
         mode === "photo" ? photo : undefined,
       );
+      if (errorMessage) {
+        setSubmitError(errorMessage);
+        window.requestAnimationFrame(() => submitErrorRef.current?.focus());
+      }
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -2697,7 +2807,11 @@ function AddGarmentDialog({
             <span>⌨</span>手动录入
           </button>
         </div>
-        <form onSubmit={submit} aria-busy={submitting}>
+        <form
+          onSubmit={submit}
+          aria-busy={submitting}
+          aria-describedby={submitError ? "garment-submit-error" : undefined}
+        >
           <div
             id="add-mode-panel"
             role="tabpanel"
@@ -2722,11 +2836,13 @@ function AddGarmentDialog({
                     type="file"
                     accept="image/jpeg,image/png,image/webp"
                     capture="environment"
+                    aria-invalid={importError ? true : undefined}
+                    aria-errormessage={importError ? "photo-import-error" : undefined}
                     onChange={(event) => choosePhoto(event.target.files?.[0])}
                   />
                 </label>
                 {importError && (
-                  <p className="import-error" role="alert">
+                  <p id="photo-import-error" className="import-error" role="alert">
                     {importError}
                   </p>
                 )}
@@ -2950,7 +3066,7 @@ function AddGarmentDialog({
                 </label>
               </div>
               {analyzed && (
-                <div className="analysis-result">
+                <div className="analysis-result" role="status" aria-live="polite">
                   <div>
                     <span>记录状态</span>
                     <b>
@@ -2972,6 +3088,18 @@ function AddGarmentDialog({
               )}
             </div>
           </div>
+          {submitError && (
+            <div
+              ref={submitErrorRef}
+              id="garment-submit-error"
+              className="submit-error"
+              role="alert"
+              tabIndex={-1}
+            >
+              <strong>还没有保存成功</strong>
+              <span>{submitError}</span>
+            </div>
+          )}
           <div className="dialog-footer">
             <button
               type="button"
@@ -2998,11 +3126,13 @@ function AddGarmentDialog({
 function CelebrationDialog({
   onClose,
   onCloset,
+  returnFocusRef,
 }: {
   onClose: () => void;
   onCloset: () => void;
+  returnFocusRef: React.RefObject<HTMLElement | null>;
 }) {
-  const dialogRef = useDialogAccessibility<HTMLDivElement>(onClose);
+  const dialogRef = useDialogAccessibility<HTMLDivElement>(onClose, returnFocusRef);
   return (
     <div
       className="modal-layer modal-layer--center celebration-layer"
