@@ -2324,8 +2324,8 @@ function StudioView({
     <div className="page page--studio">
       <section className="studio-heading"><div><p className="eyebrow">3D FITTING STUDIO</p><h1>让分身更像你</h1><p>没有标准身材，调到看起来像你就好。</p></div><div className="studio-disclaimer"><span aria-hidden="true">i</span><p><strong>视觉参考，不是合身保证</strong>面料垂坠、弹性和真实松量可能不同。</p></div></section>
       <section className="studio-grid">
-        <aside className="studio-panel studio-closet-panel">
-          <div className="panel-title"><div><p>可试穿衣物</p><strong>{previewableWardrobe.length} 件</strong></div><span>点击穿上</span></div>
+        <aside className="studio-panel studio-closet-panel" aria-labelledby="studio-closet-title">
+          <div className="panel-title"><div><p id="studio-closet-title">可试穿衣物</p><strong>{previewableWardrobe.length} 件</strong></div><span>点击穿上</span></div>
           <div className="mini-chip-row" role="group" aria-label="试穿衣物分类">{STUDIO_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={closetCategory === item} className={closetCategory === item ? "is-active" : ""} onClick={() => setClosetCategory(item)}>{item}</button>)}</div>
           <div className="studio-item-list">{visible.length ? visible.map((item) => {
             const isWearing = selectedIds.includes(item.id);
@@ -2337,8 +2337,8 @@ function StudioView({
           <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
           <div className="wearing-dock"><div><span>当前穿搭</span><div className="wearing-chips">{selected.length ? selected.map((item) => <button type="button" key={item.id} aria-label={`脱下${item.name}`} onClick={() => removeFromOutfit(item)}><i aria-hidden="true" style={{ background: item.color }} />{item.name}<b aria-hidden="true">×</b></button>) : <span>还没有穿上衣服</span>}</div></div><button type="button" className="reset-button" aria-label="清空当前试穿" disabled={!selected.length} onClick={() => setOutfit({})}>清空试穿</button></div>
         </div>
-        <aside className="studio-panel body-panel">
-          <div className="panel-title"><div><p>我的分身</p><strong>手动微调</strong></div><span>实时更新</span></div>
+        <aside className="studio-panel body-panel" aria-labelledby="studio-body-title">
+          <div className="panel-title"><div><p id="studio-body-title">我的分身</p><strong>手动微调</strong></div><span>实时更新</span></div>
           <div className="preset-group"><span id="body-shape-label">身形起点</span><div className="preset-grid" role="group" aria-labelledby="body-shape-label">{([ ["straight", "直筒"], ["pear", "梨形"], ["hourglass", "沙漏"], ["inverted", "倒三角"], ["apple", "苹果形"] ] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={metrics.bodyShape === value} className={metrics.bodyShape === value ? "is-active" : ""} onClick={() => choosePreset(value)}>{label}</button>)}</div></div>
           <div className="metric-pair"><MetricInput label="身高" value={metrics.height} min={145} max={195} unit="cm" onChange={(height) => setMetrics((current) => ({ ...current, height }))} /><MetricInput label="体重" value={metrics.weight} min={38} max={120} unit="kg" onChange={(weight) => setMetrics((current) => ({ ...current, weight }))} /></div>
           <div className="slider-list">

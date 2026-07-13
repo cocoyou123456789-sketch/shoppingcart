@@ -27,8 +27,10 @@ import {
   avatarAriaDescription,
   avatarGeometryDetail,
   avatarPixelRatio,
+  avatarZoomPercent,
   cancelVisibleTimeBudget,
   createVisibleTimeBudget,
+  disposeUniqueResources,
   pauseVisibleTimeBudget,
   replaceRuntimeAvatar,
   resumeVisibleTimeBudget,
@@ -71,12 +73,66 @@ const CAMERA_POSITIONS: Record<CameraView, [number, number, number]> = {
   back: [0, 2.8, -9],
 };
 
-function material(color: string, roughness = 0.72) {
-  return new MeshStandardMaterial({
+const CAMERA_TARGET: [number, number, number] = [0, 2.55, 0];
+const CAMERA_MIN_DISTANCE = 6.5;
+const CAMERA_MAX_DISTANCE = 12;
+const CAMERA_DEFAULT_DISTANCES = Object.fromEntries(
+  Object.entries(CAMERA_POSITIONS).map(([view, [x, y, z]]) => [
+    view,
+    Math.hypot(x - CAMERA_TARGET[0], y - CAMERA_TARGET[1], z - CAMERA_TARGET[2]),
+  ]),
+) as Record<CameraView, number>;
+// OrbitControls expects a factor below 1 for both public dolly methods.
+const AVATAR_ZOOM_SCALE = 1 / 1.15;
+const AVATAR_ZOOM_ANNOUNCE_DELAY_MS = 200;
+
+type AvatarResources = {
+  geometries: Map<string, BufferGeometry>;
+  materials: Map<string, Material>;
+};
+
+function retainedGeometry(
+  resources: AvatarResources,
+  key: string,
+  create: () => BufferGeometry,
+) {
+  const existing = resources.geometries.get(key);
+  if (existing) return existing;
+  const geometry = create();
+  resources.geometries.set(key, geometry);
+  return geometry;
+}
+
+function material(
+  resources: AvatarResources,
+  key: string,
+  color: string,
+  roughness = 0.72,
+  options: { metalness?: number; transparent?: boolean; opacity?: number } = {},
+) {
+  const metalness = options.metalness ?? 0.02;
+  const transparent = options.transparent ?? false;
+  const opacity = options.opacity ?? 1;
+  const existing = resources.materials.get(key);
+  if (existing instanceof MeshStandardMaterial) {
+    const shaderStateChanged = existing.transparent !== transparent;
+    existing.color.set(color);
+    existing.roughness = roughness;
+    existing.metalness = metalness;
+    existing.transparent = transparent;
+    existing.opacity = opacity;
+    if (shaderStateChanged) existing.needsUpdate = true;
+    return existing;
+  }
+  const nextMaterial = new MeshStandardMaterial({
     color,
     roughness,
-    metalness: 0.02,
+    metalness,
+    transparent,
+    opacity,
   });
+  resources.materials.set(key, nextMaterial);
+  return nextMaterial;
 }
 
 function mesh(
@@ -136,6 +192,7 @@ type SceneRuntime = {
   metrics: BodyMetrics;
   outfit: AvatarOutfit;
   reducedDetail: boolean;
+  resources: AvatarResources;
   cancelAutoRotate: () => void;
   renderFrame: (timestamp?: number) => boolean;
   resize: () => void;
@@ -143,7 +200,7 @@ type SceneRuntime = {
   disposed: boolean;
 };
 
-function disposeObject3D(object: Object3D) {
+function disposeObject3D(object: Object3D, retained?: AvatarResources) {
   const geometries = new Set<BufferGeometry>();
   const materials = new Set<Material>();
   object.traverse((child) => {
@@ -152,15 +209,45 @@ function disposeObject3D(object: Object3D) {
     const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
     childMaterials.forEach((item) => materials.add(item));
   });
-  geometries.forEach((geometry) => geometry.dispose());
-  materials.forEach((item) => item.dispose());
+  disposeUniqueResources(
+    geometries,
+    retained?.geometries.values() ?? [],
+    (geometry: BufferGeometry) => geometry.dispose(),
+  );
+  disposeUniqueResources(
+    materials,
+    retained?.materials.values() ?? [],
+    (item: Material) => item.dispose(),
+  );
 }
 
-function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail = false) {
+function disposeAvatarResources(resources: AvatarResources) {
+  disposeUniqueResources(
+    resources.geometries.values(),
+    [],
+    (geometry: BufferGeometry) => geometry.dispose(),
+  );
+  disposeUniqueResources(
+    resources.materials.values(),
+    [],
+    (item: Material) => item.dispose(),
+  );
+  resources.geometries.clear();
+  resources.materials.clear();
+}
+
+function buildAvatar(
+  metrics: BodyMetrics,
+  outfit: AvatarOutfit,
+  reducedDetail: boolean,
+  resources: AvatarResources,
+) {
   const detail = avatarGeometryDetail(reducedDetail);
   const avatar = new Group();
   avatar.position.y = -3.02;
   avatar.scale.y = metrics.height / 168;
+
+  try {
 
   const bmi = metrics.weight / Math.pow(metrics.height / 100, 2);
   const mass = MathUtils.clamp(0.88 + (bmi - 20) * 0.018, 0.76, 1.28);
@@ -171,15 +258,35 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
   const torsoScale = MathUtils.clamp(metrics.torso / 50, 0.84, 1.17);
   const legScale = MathUtils.clamp(metrics.legs / 82, 0.86, 1.16);
 
-  const skin = material(metrics.skinTone, 0.82);
-  const hair = material("#332b2c", 0.9);
-  const eye = material("#44383b", 0.6);
+  const skin = material(resources, "skin", metrics.skinTone, 0.82);
+  const hair = material(resources, "hair", "#332b2c", 0.9);
+  const eye = material(resources, "eye", "#44383b", 0.6);
+  const headGeometry = retainedGeometry(
+    resources,
+    "head",
+    () => new SphereGeometry(0.45, ...detail.head),
+  );
+  const hairGeometry = retainedGeometry(
+    resources,
+    "hair",
+    () => new SphereGeometry(0.47, ...detail.hair),
+  );
+  const neckGeometry = retainedGeometry(
+    resources,
+    "neck",
+    () => new CylinderGeometry(0.17, 0.2, 0.42, detail.cylinder),
+  );
+  const eyeGeometry = retainedGeometry(
+    resources,
+    "eye",
+    () => new SphereGeometry(0.035, ...detail.eye),
+  );
 
-  avatar.add(mesh(new SphereGeometry(0.45, ...detail.head), skin, [0, 5.75, 0], [0.92, 1.06, 0.9]));
-  avatar.add(mesh(new SphereGeometry(0.47, ...detail.hair), hair, [0, 5.88, -0.12], [1, 1.02, 0.78]));
-  avatar.add(mesh(new CylinderGeometry(0.17, 0.2, 0.42, detail.cylinder), skin, [0, 5.22, 0]));
-  avatar.add(mesh(new SphereGeometry(0.035, ...detail.eye), eye, [-0.16, 5.82, 0.41]));
-  avatar.add(mesh(new SphereGeometry(0.035, ...detail.eye), eye, [0.16, 5.82, 0.41]));
+  avatar.add(mesh(headGeometry, skin, [0, 5.75, 0], [0.92, 1.06, 0.9]));
+  avatar.add(mesh(hairGeometry, hair, [0, 5.88, -0.12], [1, 1.02, 0.78]));
+  avatar.add(mesh(neckGeometry, skin, [0, 5.22, 0]));
+  avatar.add(mesh(eyeGeometry, eye, [-0.16, 5.82, 0.41]));
+  avatar.add(mesh(eyeGeometry, eye, [0.16, 5.82, 0.41]));
 
   avatar.add(
     mesh(
@@ -189,7 +296,11 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
       [chestWidth * mass, torsoScale, 0.62 * mass],
     ),
     mesh(
-      new SphereGeometry(0.83, ...detail.body),
+      retainedGeometry(
+        resources,
+        "body",
+        () => new SphereGeometry(0.83, ...detail.body),
+      ),
       skin,
       [0, 3.14, 0],
       [hipWidth * mass, 0.62, 0.68 * mass],
@@ -199,19 +310,24 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
   const armGeo = new CapsuleGeometry(0.17 * mass, 1.65, ...detail.capsule);
   const leftArm = mesh(armGeo, skin, [-0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
   leftArm.rotation.z = -0.08;
-  const rightArm = mesh(armGeo.clone(), skin, [0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
+  const rightArm = mesh(armGeo, skin, [0.92 * shoulderWidth * mass, 4.04, 0], [1, 1.04 * torsoScale, 1]);
   rightArm.rotation.z = 0.08;
   avatar.add(leftArm, rightArm);
 
   const legGeo = new CapsuleGeometry(0.25 * mass, 2.42, ...detail.capsule);
   avatar.add(
     mesh(legGeo, skin, [-0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
-    mesh(legGeo.clone(), skin, [0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
+    mesh(legGeo, skin, [0.35 * hipWidth, 1.35, 0], [1, legScale, 1]),
   );
-  const shoeMaterial = material("#4c4548", 0.68);
+  const shoeMaterial = material(resources, "shoe", "#4c4548", 0.68);
+  const shoeGeometry = retainedGeometry(
+    resources,
+    "shoe",
+    () => new SphereGeometry(0.31, ...detail.shoe),
+  );
   avatar.add(
-    mesh(new SphereGeometry(0.31, ...detail.shoe), shoeMaterial, [-0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
-    mesh(new SphereGeometry(0.31, ...detail.shoe), shoeMaterial, [0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
+    mesh(shoeGeometry, shoeMaterial, [-0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
+    mesh(shoeGeometry, shoeMaterial, [0.35 * hipWidth, 0.05, 0.17], [1, 0.56, 1.55]),
   );
 
   if (outfit.dress) {
@@ -219,7 +335,7 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
     const dressWaistScale = measurementScale(outfit.dress.waist, metrics.waist, 5, 0.86, 1.28);
     const dressHipScale = measurementScale(outfit.dress.hips, metrics.hips, 8, 0.86, 1.3);
     const dressLengthScale = lengthScale(outfit.dress.length, 110, 0.72, 1.22);
-    const dressMaterial = material(outfit.dress.color, 0.78);
+    const dressMaterial = material(resources, "dress", outfit.dress.color, 0.78);
     avatar.add(
       mesh(
         new CylinderGeometry(
@@ -257,7 +373,7 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
             1.64,
             detail.cylinder,
           ),
-          material(outfit.top.color, 0.76),
+          material(resources, "top", outfit.top.color, 0.76),
           [0, 4.22 - (topLengthScale - 1) * 0.55, 0],
           [mass, torsoScale * topLengthScale, 0.68 * mass],
         ),
@@ -267,16 +383,21 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
       const bottomWaistScale = measurementScale(outfit.bottom.waist, metrics.waist, 4, 0.86, 1.3);
       const bottomHipScale = measurementScale(outfit.bottom.hips, metrics.hips, 6, 0.86, 1.3);
       const bottomLengthScale = lengthScale(outfit.bottom.length, 100, 0.58, 1.16);
-      const bottomMaterial = material(outfit.bottom.color, 0.8);
+      const bottomMaterial = material(resources, "bottom", outfit.bottom.color, 0.8);
+      const bottomLegGeometry = new CapsuleGeometry(
+        0.28 * mass * bottomHipScale,
+        2.1,
+        ...detail.capsule,
+      );
       avatar.add(
         mesh(
-          new CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, ...detail.capsule),
+          bottomLegGeometry,
           bottomMaterial,
           [-0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
           [1.05, legScale * bottomLengthScale, 1.08],
         ),
         mesh(
-          new CapsuleGeometry(0.28 * mass * bottomHipScale, 2.1, ...detail.capsule),
+          bottomLegGeometry,
           bottomMaterial,
           [0.35 * hipWidth, 1.55 + (1 - bottomLengthScale) * 1.05, 0],
           [1.05, legScale * bottomLengthScale, 1.08],
@@ -300,9 +421,8 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
     const coatChestScale = measurementScale(outfit.outerwear.chest, metrics.chest, 12, 0.86, 1.3);
     const coatHipScale = measurementScale(outfit.outerwear.hips, metrics.hips, 12, 0.86, 1.32);
     const coatLengthScale = lengthScale(outfit.outerwear.length, 82, 0.68, 1.28);
-    const coatMaterial = new MeshStandardMaterial({
-      color: outfit.outerwear.color,
-      roughness: 0.74,
+    const coatMaterial = material(resources, "outerwear", outfit.outerwear.color, 0.74, {
+      metalness: 0,
       transparent: true,
       opacity: 0.93,
     });
@@ -323,7 +443,11 @@ function buildAvatar(metrics: BodyMetrics, outfit: AvatarOutfit, reducedDetail =
     );
   }
 
-  return avatar;
+    return avatar;
+  } catch (error) {
+    disposeObject3D(avatar, resources);
+    throw error;
+  }
 }
 
 export function Avatar3D({
@@ -345,6 +469,8 @@ export function Avatar3D({
   const focusAfterRetryRef = useRef(false);
   const focusOnReadyRef = useRef(focusOnReady);
   const [cameraView, setCameraView] = useState<CameraView>("angle");
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [announcedZoomLevel, setAnnouncedZoomLevel] = useState(100);
   const [renderFailed, setRenderFailed] = useState(false);
   const [retryVersion, setRetryVersion] = useState(0);
   const cameraViewRef = useRef<CameraView>("angle");
@@ -359,6 +485,14 @@ export function Avatar3D({
   useEffect(() => {
     compactRef.current = compact;
   }, [compact]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setAnnouncedZoomLevel(zoomLevel),
+      AVATAR_ZOOM_ANNOUNCE_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [zoomLevel]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -415,8 +549,13 @@ export function Avatar3D({
       renderer.dispose();
       renderer.forceContextLoss();
     });
+    const resources: AvatarResources = {
+      geometries: new Map(),
+      materials: new Map(),
+    };
     cleanups.push(() => {
-      disposeObject3D(scene);
+      disposeObject3D(scene, resources);
+      disposeAvatarResources(resources);
       scene.clear();
     });
     let renderedPixelRatio = avatarPixelRatio(
@@ -451,7 +590,7 @@ export function Avatar3D({
 
     const reducedDetail = lowPowerDevice || isSmallScreen;
     const initialInput = sceneInputRef.current;
-    const avatar = buildAvatar(initialInput.metrics, initialInput.outfit, reducedDetail);
+    const avatar = buildAvatar(initialInput.metrics, initialInput.outfit, reducedDetail, resources);
     scene.add(avatar);
 
     const floor = new Mesh(
@@ -469,9 +608,9 @@ export function Avatar3D({
     controls.enablePan = false;
     controls.enableDamping = !reduceMotion && !lowPowerDevice;
     controls.dampingFactor = 0.06;
-    controls.minDistance = 6.5;
-    controls.maxDistance = 12;
-    controls.target.set(0, 2.55, 0);
+    controls.minDistance = CAMERA_MIN_DISTANCE;
+    controls.maxDistance = CAMERA_MAX_DISTANCE;
+    controls.target.set(...CAMERA_TARGET);
     controls.autoRotate = !reduceMotion && !lowPowerDevice;
     controls.autoRotateSpeed = 1;
     controlsRef.current = controls;
@@ -510,10 +649,16 @@ export function Avatar3D({
       }
     };
     const handleControlsChange = () => {
+      const nextZoomLevel = avatarZoomPercent(
+        CAMERA_DEFAULT_DISTANCES[cameraViewRef.current],
+        controls.getDistance(),
+      );
+      setZoomLevel((current) => current === nextZoomLevel ? current : nextZoomLevel);
       if (!rendering && !controls.autoRotate && !animationFrame && !animationTimer) renderFrame();
     };
     controls.addEventListener("change", handleControlsChange);
     cleanups.push(() => controls.removeEventListener("change", handleControlsChange));
+    handleControlsChange();
     const scheduleAnimation = () => {
       if (
         rendererFailed ||
@@ -700,6 +845,7 @@ export function Avatar3D({
       metrics: initialInput.metrics,
       outfit: initialInput.outfit,
       reducedDetail,
+      resources,
       cancelAutoRotate: () => stopAutoRotate(true, false),
       renderFrame,
       resize: handleResize,
@@ -715,10 +861,9 @@ export function Avatar3D({
     if (resizeObserver) {
       resizeObserver.observe(mount);
       cleanups.push(() => resizeObserver.disconnect());
-    } else {
-      window.addEventListener("resize", handleResize);
-      cleanups.push(() => window.removeEventListener("resize", handleResize));
     }
+    window.addEventListener("resize", handleResize);
+    cleanups.push(() => window.removeEventListener("resize", handleResize));
 
     if (renderFrame()) {
       renderer.shadowMap.autoUpdate = false;
@@ -762,8 +907,17 @@ export function Avatar3D({
 
     let nextAvatar: Group | null = null;
     try {
-      nextAvatar = buildAvatar(sceneInput.metrics, sceneInput.outfit, runtime.reducedDetail);
-      replaceRuntimeAvatar(runtime, nextAvatar, disposeObject3D);
+      nextAvatar = buildAvatar(
+        sceneInput.metrics,
+        sceneInput.outfit,
+        runtime.reducedDetail,
+        runtime.resources,
+      );
+      replaceRuntimeAvatar(
+        runtime,
+        nextAvatar,
+        (object: Object3D) => disposeObject3D(object, runtime.resources),
+      );
       runtime.metrics = sceneInput.metrics;
       runtime.outfit = sceneInput.outfit;
       runtime.renderer.domElement.setAttribute(
@@ -772,7 +926,9 @@ export function Avatar3D({
       );
       runtime.renderFrame();
     } catch {
-      if (nextAvatar && nextAvatar !== runtime.avatar) disposeObject3D(nextAvatar);
+      if (nextAvatar && nextAvatar !== runtime.avatar) {
+        disposeObject3D(nextAvatar, runtime.resources);
+      }
       runtime.failRendering();
     }
   }, [sceneInput, retryVersion]);
@@ -786,9 +942,27 @@ export function Avatar3D({
     const controls = controlsRef.current;
     if (!camera || !controls) return;
     camera.position.set(...CAMERA_POSITIONS[cameraView]);
-    controls.target.set(0, 2.55, 0);
+    controls.target.set(...CAMERA_TARGET);
     controls.update();
   }, [cameraView]);
+
+  function changeZoom(direction: "in" | "out") {
+    const runtime = runtimeRef.current;
+    const controls = controlsRef.current;
+    if (!runtime || !controls) return;
+    runtime.cancelAutoRotate();
+    if (direction === "in") controls.dollyIn(AVATAR_ZOOM_SCALE);
+    else controls.dollyOut(AVATAR_ZOOM_SCALE);
+  }
+
+  const minimumZoomLevel = avatarZoomPercent(
+    CAMERA_DEFAULT_DISTANCES[cameraView],
+    CAMERA_MAX_DISTANCE,
+  );
+  const maximumZoomLevel = avatarZoomPercent(
+    CAMERA_DEFAULT_DISTANCES[cameraView],
+    CAMERA_MIN_DISTANCE,
+  );
 
   useEffect(() => {
     if (renderFailed || !focusAfterRetryRef.current) return;
@@ -823,7 +997,7 @@ export function Avatar3D({
             重试 3D
           </button>
         </div>
-      ) : <><div ref={viewSwitcherRef} className="view-switcher" role="group" aria-label="三维分身已加载，可切换视角" tabIndex={-1}>
+      ) : <><div ref={viewSwitcherRef} className="view-switcher" role="group" aria-label="三维分身已加载，可切换视角和缩放" tabIndex={-1}>
         {(
           [
             ["front", "正面"],
@@ -846,8 +1020,27 @@ export function Avatar3D({
             {label}
           </button>
         ))}
+        <button
+          type="button"
+          className="view-control--zoom view-control--zoom-start"
+          aria-label="缩小三维分身"
+          disabled={zoomLevel <= minimumZoomLevel}
+          onClick={() => changeZoom("out")}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="view-control--zoom"
+          aria-label="放大三维分身"
+          disabled={zoomLevel >= maximumZoomLevel}
+          onClick={() => changeZoom("in")}
+        >
+          ＋
+        </button>
       </div>
-      <p className="avatar-hint">拖动旋转 · 滚轮缩放 · 视角按钮支持键盘</p></>}
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">三维分身缩放 {announcedZoomLevel}%</span>
+      <p className="avatar-hint">拖动旋转 · 滚轮缩放 · 按钮支持键盘切换与缩放</p></>}
     </div>
   );
 }

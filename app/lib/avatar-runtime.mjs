@@ -8,6 +8,17 @@ export function replaceRuntimeAvatar(runtime, nextAvatar, disposeAvatar) {
   return previousAvatar;
 }
 
+export function disposeUniqueResources(resources, retained, disposeResource) {
+  const retainedResources = retained instanceof Set ? retained : new Set(retained);
+  let disposed = 0;
+  for (const resource of new Set(resources)) {
+    if (retainedResources.has(resource)) continue;
+    disposeResource(resource);
+    disposed += 1;
+  }
+  return disposed;
+}
+
 const FULL_GEOMETRY_DETAIL = Object.freeze({
   head: [32, 24],
   hair: [28, 20],
@@ -34,11 +45,27 @@ export const AVATAR_AUTO_ROTATE_MS = 4_500;
 export const AVATAR_MAX_PHYSICAL_PIXELS = 1_100_000;
 
 export function avatarPixelRatio(width, height, devicePixelRatio, reducedDetail) {
-  const cssPixels = Math.max(1, Number(width) * Number(height) || 1);
+  const measuredWidth = Math.max(1, Number(width) || 1);
+  const measuredHeight = Math.max(1, Number(height) || 1);
+  const measuredCssPixels = measuredWidth * measuredHeight;
+  const cssPixels = Number.isFinite(measuredCssPixels)
+    ? Math.max(1, measuredCssPixels)
+    : AVATAR_MAX_PHYSICAL_PIXELS;
   const displayRatio = Math.max(1, Number(devicePixelRatio) || 1);
   const qualityLimit = reducedDetail ? 1.25 : 2;
   const budgetLimit = Math.sqrt(AVATAR_MAX_PHYSICAL_PIXELS / cssPixels);
-  return Math.max(1, Math.min(displayRatio, qualityLimit, budgetLimit));
+  return Math.min(displayRatio, qualityLimit, budgetLimit);
+}
+
+export function avatarZoomPercent(defaultDistance, currentDistance) {
+  const parsedBaseline = Number(defaultDistance);
+  if (!Number.isFinite(parsedBaseline) || parsedBaseline <= 0) return 100;
+  const baseline = parsedBaseline;
+  const parsedDistance = Number(currentDistance);
+  const distance = Number.isFinite(parsedDistance) && parsedDistance > 0
+    ? parsedDistance
+    : baseline;
+  return Math.round(Math.max(50, Math.min(200, baseline / distance * 100)));
 }
 
 export function createVisibleTimeBudget(durationMs) {
@@ -89,5 +116,5 @@ export function avatarAriaDescription(metrics, outfit) {
     : [outfit?.top && "上装", outfit?.bottom && "下装"].filter(Boolean);
   if (outfit?.outerwear) garments.push("外套");
   const outfitLabel = garments.length ? garments.join("、") : "尚未选择衣物";
-  return `三维数字分身预览：身高 ${metrics.height} 厘米，${bodyShapeNames[metrics.bodyShape] ?? "自定义体型"}，${outfitLabel}。可使用下方视角按钮查看正面、侧面和背面。`;
+  return `三维数字分身预览：身高 ${metrics.height} 厘米，${bodyShapeNames[metrics.bodyShape] ?? "自定义体型"}，${outfitLabel}。可使用下方按钮查看正面、侧面和背面，并放大或缩小。`;
 }

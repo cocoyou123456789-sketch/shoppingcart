@@ -6,8 +6,10 @@ import {
   avatarAriaDescription,
   avatarGeometryDetail,
   avatarPixelRatio,
+  avatarZoomPercent,
   cancelVisibleTimeBudget,
   createVisibleTimeBudget,
+  disposeUniqueResources,
   pauseVisibleTimeBudget,
   replaceRuntimeAvatar,
   resumeVisibleTimeBudget,
@@ -78,6 +80,54 @@ test("avatar quality tiers reduce geometry and obey a physical-pixel ceiling", (
   assert.ok(ratio < 2);
   assert.equal(avatarPixelRatio(width, height, 3, true), 1.25);
   assert.equal(avatarPixelRatio(width, height, 1, false), 1);
+
+  const oversizedWidth = 2_000;
+  const oversizedHeight = 1_000;
+  const oversizedRatio = avatarPixelRatio(oversizedWidth, oversizedHeight, 2, false);
+  assert.ok(oversizedRatio < 1, "large canvases may render below CSS resolution");
+  assert.ok(
+    oversizedWidth * oversizedHeight * oversizedRatio ** 2 <=
+      AVATAR_MAX_PHYSICAL_PIXELS + 1,
+  );
+});
+
+test("avatar resource disposal de-duplicates resources and preserves the retained pool", () => {
+  const dynamic = { id: "dynamic" };
+  const retained = { id: "retained" };
+  const replacementDisposals = [];
+
+  assert.equal(
+    disposeUniqueResources(
+      [dynamic, dynamic, retained],
+      [retained],
+      (resource) => replacementDisposals.push(resource.id),
+    ),
+    1,
+  );
+  assert.deepEqual(replacementDisposals, ["dynamic"]);
+
+  const teardownDisposals = [];
+  disposeUniqueResources(
+    [dynamic, dynamic, retained],
+    [retained],
+    (resource) => teardownDisposals.push(resource.id),
+  );
+  disposeUniqueResources(
+    [retained, retained],
+    [],
+    (resource) => teardownDisposals.push(resource.id),
+  );
+  assert.deepEqual(teardownDisposals, ["dynamic", "retained"]);
+});
+
+test("avatar zoom percentage is stable, bounded, and resilient to invalid input", () => {
+  assert.equal(avatarZoomPercent(9, 9), 100);
+  assert.equal(avatarZoomPercent(9, 6), 150);
+  assert.equal(avatarZoomPercent(9, 12), 75);
+  assert.equal(avatarZoomPercent(9, 100), 50);
+  assert.equal(avatarZoomPercent(9, 1), 200);
+  assert.equal(avatarZoomPercent(Number.NaN, Number.NaN), 100);
+  assert.equal(avatarZoomPercent(Number.NaN, 9), 100);
 });
 
 test("avatar alternative text reflects body shape and selected garment categories", () => {
@@ -89,4 +139,5 @@ test("avatar alternative text reflects body shape and selected garment categorie
   assert.match(description, /梨型/);
   assert.match(description, /上装、下装、外套/);
   assert.match(description, /正面、侧面和背面/);
+  assert.match(description, /放大或缩小/);
 });

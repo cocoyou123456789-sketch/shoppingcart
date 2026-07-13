@@ -108,9 +108,38 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /1000 \/ 30/);
   assert.match(avatar, /controls\.update\(deltaSeconds\)/);
   assert.match(avatar, /runtimeRef/);
-  assert.match(avatar, /replaceRuntimeAvatar\(runtime, nextAvatar, disposeObject3D\)/);
+  assert.match(avatar, /disposeObject3D\(object, runtime\.resources\)/);
+  assert.match(
+    avatar,
+    /disposeObject3D\(scene, resources\);\s*disposeAvatarResources\(resources\);/,
+  );
+  assert.match(avatar, /disposeObject3D\(avatar, resources\)/);
+  assert.match(avatar, /new ResizeObserver\(handleResize\)/);
+  assert.match(avatar, /window\.addEventListener\("resize", handleResize\)/);
+  assert.match(avatar, /window\.removeEventListener\("resize", handleResize\)/);
   assert.match(avatar, /createVisibleTimeBudget\(AVATAR_AUTO_ROTATE_MS\)/);
   assert.match(avatar, /avatarPixelRatio/);
+  assert.match(
+    avatar,
+    /aria-label="缩小三维分身"[\s\S]*?onClick=\{\(\) => changeZoom\("out"\)\}/,
+  );
+  assert.match(
+    avatar,
+    /aria-label="放大三维分身"[\s\S]*?onClick=\{\(\) => changeZoom\("in"\)\}/,
+  );
+  assert.match(avatar, /const AVATAR_ZOOM_SCALE = 1 \/ 1\.15/);
+  assert.match(avatar, /controls\.dollyIn\(AVATAR_ZOOM_SCALE\)/);
+  assert.match(avatar, /controls\.dollyOut\(AVATAR_ZOOM_SCALE\)/);
+  assert.match(avatar, /AVATAR_ZOOM_ANNOUNCE_DELAY_MS = 200/);
+  assert.match(avatar, /三维分身缩放 \{announcedZoomLevel\}%/);
+  assert.match(avatar, /const armGeo = new CapsuleGeometry/);
+  assert.doesNotMatch(avatar, /armGeo\.clone\(\)|legGeo\.clone\(\)/);
+  assert.match(app, /aria-labelledby="studio-closet-title"/);
+  assert.match(app, /aria-labelledby="studio-body-title"/);
+  assert.match(app, /id="studio-closet-title"/);
+  assert.match(app, /id="studio-body-title"/);
+  assert.match(avatar, /buildAvatar\(initialInput\.metrics, initialInput\.outfit, reducedDetail, resources\)/);
+  assert.match(avatar, /runtime\.reducedDetail,\s*runtime\.resources,/);
   assert.match(avatarRuntime, /disposeAvatar\(previousAvatar\)/);
   assert.match(avatarRuntime, /shadowMap\.needsUpdate = true/);
   assert.doesNotMatch(avatar, /\[sceneMetrics, sceneOutfit, compact, retryVersion\]/);
@@ -174,11 +203,26 @@ test("critical secondary text colors meet WCAG AA contrast", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const muted = styles.match(/--muted:\s*(#[0-9a-f]{6})/i)?.[1];
   const pathCopy = styles.match(/\.path-card p \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i)?.[1];
+  const studioDisclaimer = styles.match(
+    /\.studio-disclaimer p \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
+  )?.[1];
+  const fitCopy = styles.match(
+    /\.fit-readout span,[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
+  )?.[1];
+  const fitResult = styles.match(
+    /\.fit-readout b \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
+  )?.[1];
   assert.ok(muted);
   assert.ok(pathCopy);
+  assert.ok(studioDisclaimer);
+  assert.ok(fitCopy);
+  assert.ok(fitResult);
   assert.ok(contrastRatio(muted, "#e5e9e1") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#e7c7bb") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#cbc7dd") >= 4.5);
+  assert.ok(contrastRatio(studioDisclaimer, "#eee8df") >= 4.5);
+  assert.ok(contrastRatio(fitCopy, "#e7eae3") >= 4.5);
+  assert.ok(contrastRatio(fitResult, "#e7eae3") >= 4.5);
 });
 
 test("rejects anonymous reads and writes to private wardrobe APIs", async () => {
