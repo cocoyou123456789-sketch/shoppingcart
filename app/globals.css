@@ -257,6 +257,43 @@ h3 {
   width: 8px;
 }
 
+.clear-retry-dialog {
+  background: rgba(48, 44, 45, 0.48);
+  display: grid;
+  inset: 0;
+  padding: 24px;
+  place-items: center;
+  position: fixed;
+  z-index: 210;
+}
+
+.clear-retry-dialog__panel {
+  background: var(--paper);
+  border: 1px solid rgba(74, 65, 61, 0.12);
+  border-radius: 24px;
+  box-shadow: 0 24px 70px rgba(48, 44, 45, 0.28);
+  max-width: 520px;
+  padding: clamp(24px, 5vw, 38px);
+  width: 100%;
+}
+
+.clear-retry-dialog__panel h2 {
+  font-family: var(--font-display), serif;
+  font-size: clamp(26px, 5vw, 36px);
+  line-height: 1.12;
+  margin: 8px 0 14px;
+}
+
+.clear-retry-dialog__panel > p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.75;
+  margin: 0 0 24px;
+}
+
+.clear-retry-dialog__panel .button {
+  width: 100%;
+}
+
 .topbar {
   align-items: center;
   backdrop-filter: blur(20px);
@@ -1755,6 +1792,18 @@ input[type="range"] {
 .privacy-controls .button {
   flex: 0 0 auto;
   min-height: 42px;
+}
+
+.privacy-controls--retry {
+  background: rgba(243, 216, 207, 0.34);
+  border-color: rgba(135, 68, 56, 0.38);
+}
+
+.privacy-controls .privacy-retry-message {
+  color: var(--coral-dark);
+  font-weight: 700;
+  margin-top: 7px;
+  max-width: 62ch;
 }
 
 .add-card,

@@ -7,6 +7,7 @@ import {
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
 import { requireExpectedOwner } from "../../lib/request-owner";
+import { createPerBindingInitializer } from "../../lib/per-binding-initializer.mjs";
 
 type ProfileRow = {
   height: number;
@@ -51,7 +52,7 @@ async function hasProfileRevisionColumn(db: D1Database) {
   return columns.results.some((column) => column.name === "revision");
 }
 
-export async function ensureProfileTable(db: D1Database) {
+async function initializeProfileTable(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS body_profiles (
     owner_email TEXT PRIMARY KEY NOT NULL,
     height INTEGER NOT NULL,
@@ -78,6 +79,8 @@ export async function ensureProfileTable(db: D1Database) {
     if (!(await hasProfileRevisionColumn(db))) throw error;
   }
 }
+
+export const ensureProfileTable = createPerBindingInitializer(initializeProfileTable);
 
 export async function GET(request: Request) {
   try {

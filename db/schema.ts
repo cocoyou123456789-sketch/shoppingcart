@@ -48,6 +48,7 @@ export const wardrobeImageCleanup = sqliteTable(
   {
     imageKey: text("image_key").primaryKey(),
     ownerEmail: text("owner_email").notNull(),
+    uploadState: text("upload_state").notNull().default("ready"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [index("wardrobe_cleanup_owner_idx").on(table.ownerEmail)],

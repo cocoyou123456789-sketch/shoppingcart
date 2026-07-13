@@ -14,6 +14,7 @@ export function ClosetView({
   onDelete,
   onClearData,
   clearingData,
+  clearRetryPending,
 }: ClosetViewProps) {
   const [category, setCategory] = useState<(typeof CLOSET_CATEGORIES)[number]>("全部");
   const visible = wardrobe.filter((item) => category === "全部" || item.category === category);
@@ -60,9 +61,9 @@ export function ClosetView({
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {category === "全部" ? `衣橱共有 ${visible.length} 件` : `${category}分类共有 ${visible.length} 件`}
       </p>
-      <section className="privacy-controls" aria-labelledby="privacy-controls-title" aria-busy={clearingData}>
-        <div><span aria-hidden="true">⌁</span><div><h2 id="privacy-controls-title">你的资料由你决定</h2><p>可随时清除衣橱、身体参数、搭配、收藏和虚拟购物袋；登录版会同时清除云端副本。</p></div></div>
-        <button type="button" className="button button--soft" disabled={clearingData} onClick={onClearData}>{clearingData ? "正在清除…" : "清除我的全部资料"}</button>
+      <section className={`privacy-controls${clearRetryPending ? " privacy-controls--retry" : ""}`} aria-labelledby="privacy-controls-title" aria-busy={clearingData}>
+        <div><span aria-hidden="true">⌁</span><div><h2 id="privacy-controls-title">你的资料由你决定</h2><p>可随时清除衣橱、身体参数、搭配、收藏和虚拟购物袋；登录版会同时清除云端副本。</p>{clearRetryPending && <p className="privacy-retry-message" role="alert">页面中的资料已清空，但本机或云端副本还没有全部清除。请在网络或本机存储恢复后继续完成清除。</p>}</div></div>
+        <button type="button" className="button button--soft" disabled={clearingData} onClick={onClearData}>{clearingData ? "正在清除…" : clearRetryPending ? "继续清除剩余副本" : "清除我的全部资料"}</button>
       </section>
       <section className="wardrobe-grid">
         <button type="button" className="add-card" onClick={(event) => onAdd(event.currentTarget)}><span>＋</span><strong>添加一件衣服</strong><small>拍照、链接或手动录入</small></button>

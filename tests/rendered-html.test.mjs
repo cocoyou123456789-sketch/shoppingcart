@@ -150,8 +150,17 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(clearRecoverySource, /handleSessionChangedResponse\(response\)/);
   assert.match(app, /localSnapshotKey\(storageOwner\)/);
   assert.match(app, /isClearedLocalSnapshot/);
-  assert.match(app, /const backgroundInert = clearingData \|\| cartOpen \|\| addOpen \|\| celebrationOpen/);
+  assert.match(
+    app,
+    /const backgroundInert =\s*clearingData \|\| clearRetryPending \|\| cartOpen \|\| addOpen \|\| celebrationOpen/,
+    "a failed remote clear must keep the editable application inert until cleanup resumes",
+  );
   assert.match(app, /inert=\{backgroundInert \? true : undefined\}/);
+  assert.match(app, /role="alertdialog"[\s\S]*?aria-modal="true"/);
+  assert.match(app, /ref=\{clearRetryButtonRef\}[\s\S]*?void clearPersonalData\(\)/);
+  assert.match(app, /clearRetryButtonRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /event\.key !== "Tab"[\s\S]*?event\.preventDefault\(\)/);
+  assert.match(app, /retryButton\.disabled = false;[\s\S]*?retryButton\.focus/);
   assert.match(app, /href="#main-content"/);
   assert.match(app, /id="main-content"/);
   assert.match(shopView, /className="product-grid">/);
@@ -229,7 +238,29 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /deviceGenerationAction\([\s\S]*?incompatibleSnapshot\.current/);
   assert.match(app, /generationAction === "reset-known"/);
   assert.match(app, /当前版本不会覆盖它/);
-  assert.match(dailyView, /rankOutfitSelections/);
+  assert.match(app, /clearRetryPending=\{clearRetryPending\}/);
+  assert.match(app, /setClearRetryPending\(true\)/);
+  assert.match(
+    app,
+    /retryLockRequired = true;[\s\S]*?setClearRetryPending\(true\);[\s\S]*?publishClearResult\(false\)/,
+    "a failed-marker storage error must not unlock a still-pending clear boundary",
+  );
+  assert.match(
+    app,
+    /retryLockRequired && matchingTerminalStatus !== "complete"/,
+  );
+  assert.match(closetView, /role="alert"[^>]*>页面中的资料已清空，但本机或云端副本还没有全部清除/);
+  assert.match(closetView, /继续清除剩余副本/);
+  assert.match(
+    dailyView,
+    /const scoredLooks = useMemo\(\(\) => \{[\s\S]*?return rankOutfitSelections/,
+  );
+  assert.match(
+    dailyView,
+    /\}, \[comfort, feeling, metrics\.chest, occasion, wardrobe, weather\]\);/,
+    "rotating an existing suggestion window must not rerank every outfit",
+  );
+  assert.match(dailyView, /第 \{alternativeOffset \+ 1\} 组搭配/);
   assert.match(app, /avatarOutfitFromSelection\(outfit, wardrobe\)/);
   assert.match(app, /updateOutfit\(\(current\) => wearWardrobeItem\(current, item\)\)/);
   assert.match(app, /setPendingTryOnAnnouncement\([\s\S]*?wearWardrobeItemAnnouncement/);
@@ -445,12 +476,19 @@ test("critical secondary text colors meet WCAG AA contrast", async () => {
   const recognitionBadge = styles.match(
     /\.form-section-title span \{[\s\S]*?color:\s*(#[0-9a-f]{6})/i,
   )?.[1];
+  const privacyRetryColorToken = styles.match(
+    /\.privacy-controls \.privacy-retry-message \{[\s\S]*?color:\s*var\(--([^)]+)\)/i,
+  )?.[1];
+  const privacyRetryColor = privacyRetryColorToken
+    ? styles.match(new RegExp(`--${privacyRetryColorToken}:\\s*(#[0-9a-f]{6})`, "i"))?.[1]
+    : undefined;
   assert.ok(muted);
   assert.ok(pathCopy);
   assert.ok(studioDisclaimer);
   assert.ok(fitCopy);
   assert.ok(fitResult);
   assert.ok(recognitionBadge);
+  assert.ok(privacyRetryColor);
   assert.ok(contrastRatio(muted, "#e5e9e1") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#e7c7bb") >= 4.5);
   assert.ok(contrastRatio(pathCopy, "#cbc7dd") >= 4.5);
@@ -458,6 +496,7 @@ test("critical secondary text colors meet WCAG AA contrast", async () => {
   assert.ok(contrastRatio(fitCopy, "#e7eae3") >= 4.5);
   assert.ok(contrastRatio(fitResult, "#e7eae3") >= 4.5);
   assert.ok(contrastRatio(recognitionBadge, "#eee3cf") >= 4.5);
+  assert.ok(contrastRatio(privacyRetryColor, "#f3d8cf") >= 4.5);
 });
 
 test("critical product labels stay readable and touch ranges keep a usable hit area", async () => {

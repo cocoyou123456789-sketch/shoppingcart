@@ -1,16 +1,22 @@
+import { createPerBindingInitializer } from "./per-binding-initializer.mjs";
+
 export const DATA_GENERATION_HEADER = "x-songsong-data-generation";
 export const CLEAR_REQUEST_HEADER = "x-songsong-clear-request";
 export const INITIAL_DATA_GENERATION = "initial";
 
 const VALID_GENERATION = /^[a-zA-Z0-9-]{1,100}$/;
 
-export async function ensureDataGenerationTable(db: D1Database) {
+async function initializeDataGenerationTable(db: D1Database) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS owner_data_generations (
     owner_email TEXT PRIMARY KEY NOT NULL,
     generation TEXT NOT NULL,
     cleared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`).run();
 }
+
+export const ensureDataGenerationTable = createPerBindingInitializer(
+  initializeDataGenerationTable,
+);
 
 export async function currentDataGeneration(db: D1Database, owner: string) {
   await ensureDataGenerationTable(db);

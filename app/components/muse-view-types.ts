@@ -31,6 +31,7 @@ export type ClosetViewProps = {
   onDelete: (item: WardrobeItem) => Promise<void> | void;
   onClearData: () => void;
   clearingData: boolean;
+  clearRetryPending: boolean;
 };
 
 export type StudioViewProps = {

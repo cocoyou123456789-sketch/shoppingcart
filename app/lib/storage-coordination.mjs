@@ -2,6 +2,68 @@ const CLEAR_MARKER_VERSION = 2;
 const LEGACY_CLEAR_MARKER_VERSION = 1;
 const MAX_SIGNAL_LENGTH = 100;
 const MAX_GENERATION_LENGTH = 200;
+const DEFAULT_CLEAR_RETRY_DELAY_MS = 2_000;
+const MIN_CLEAR_RETRY_DELAY_MS = 250;
+const MAX_CLEAR_RETRY_DELAY_MS = 5_000;
+const CLEAR_RETRY_ACTIVE_CHECK_MS = 250;
+
+/**
+ * Parses both Retry-After forms while keeping personal-data clears responsive.
+ * Missing/malformed values get a conservative pause; excessively long server
+ * hints are capped so a clear operation cannot hold the interface indefinitely.
+ */
+export function clearRetryDelayMs(
+  retryAfter,
+  now = Date.now(),
+) {
+  let requestedDelay = Number.NaN;
+  if (typeof retryAfter === "string") {
+    const value = retryAfter.trim();
+    if (/^(?:0|[1-9]\d*)$/.test(value)) {
+      const seconds = Number(value);
+      requestedDelay = Number.isFinite(seconds)
+        ? seconds * 1_000
+        : MAX_CLEAR_RETRY_DELAY_MS;
+    } else if (value) {
+      const retryAt = Date.parse(value);
+      if (Number.isFinite(retryAt) && Number.isFinite(now)) {
+        requestedDelay = retryAt - now;
+      }
+    }
+  }
+  if (!Number.isFinite(requestedDelay)) {
+    requestedDelay = DEFAULT_CLEAR_RETRY_DELAY_MS;
+  }
+  return Math.min(
+    MAX_CLEAR_RETRY_DELAY_MS,
+    Math.max(MIN_CLEAR_RETRY_DELAY_MS, Math.ceil(requestedDelay)),
+  );
+}
+
+/**
+ * Waits in short slices so a replaced clear boundary or account can stop the
+ * retry promptly. The injectable sleeper keeps the policy deterministic in
+ * tests without relying on wall-clock timers.
+ */
+export async function waitForActiveClearRetry(
+  delayMs,
+  isActive,
+  sleep = (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
+) {
+  if (typeof isActive !== "function" || !isActive()) return false;
+  const boundedDelay = Math.min(
+    MAX_CLEAR_RETRY_DELAY_MS,
+    Math.max(0, Number.isFinite(delayMs) ? Math.ceil(delayMs) : DEFAULT_CLEAR_RETRY_DELAY_MS),
+  );
+  let elapsed = 0;
+  while (elapsed < boundedDelay) {
+    if (!isActive()) return false;
+    const slice = Math.min(CLEAR_RETRY_ACTIVE_CHECK_MS, boundedDelay - elapsed);
+    await sleep(slice);
+    elapsed += slice;
+  }
+  return isActive();
+}
 
 export function clearMarkerStorageKey(snapshotKey) {
   return `${snapshotKey}:clear-marker`;

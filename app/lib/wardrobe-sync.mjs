@@ -42,3 +42,40 @@ export function removeWardrobeIdentity(wardrobe, outfit, clientId, itemIds = [])
     },
   };
 }
+
+const CONFIRMED_DEVICE_SAVE_RESULTS = new Set([
+  "complete",
+  "metadata-only",
+  "unchanged",
+]);
+
+/**
+ * Builds the only snapshot that may back an offline cloud deletion. Keeping
+ * this separate from live UI state lets the caller persist the tombstone
+ * before making the garment disappear from the current session.
+ */
+export function stageQueuedWardrobeDeletion(snapshot, clientId, itemIds = []) {
+  const removed = removeWardrobeIdentity(
+    snapshot.wardrobe,
+    snapshot.outfit ?? {},
+    clientId,
+    itemIds,
+  );
+  return {
+    ...snapshot,
+    wardrobe: removed.wardrobe,
+    outfit: removed.outfit,
+    deletedWardrobeClientIds: [
+      ...new Set([...(snapshot.deletedWardrobeClientIds ?? []), clientId]),
+    ],
+  };
+}
+
+/**
+ * An offline deletion is safe to expose only after its tombstone snapshot was
+ * durably written. Conflicts, incompatible schemas and storage failures all
+ * retain the garment so the UI never promises a retry it cannot perform.
+ */
+export function queuedWardrobeDeletionAction(saveResult) {
+  return CONFIRMED_DEVICE_SAVE_RESULTS.has(saveResult) ? "commit" : "retain";
+}

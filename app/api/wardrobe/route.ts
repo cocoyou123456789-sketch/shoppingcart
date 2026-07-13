@@ -10,11 +10,17 @@ import {
   EXPECTED_OWNER_QUERY,
   requireExpectedOwner,
 } from "../../lib/request-owner";
+import { createPerBindingInitializer } from "../../lib/per-binding-initializer.mjs";
 import {
   MAX_GARMENT_NAME_LENGTH,
   MAX_GARMENT_SOURCE_URL_LENGTH,
   isValidGarmentSourceUrl,
 } from "../../lib/garment-form-options";
+import {
+  ABANDONED_IMAGE_UPLOAD_MINUTES,
+  stageTrackedWardrobeImage,
+  stagedImageResolution,
+} from "../../lib/wardrobe-image-lifecycle.mjs";
 import { isClientWardrobeId, wardrobeCloudId } from "../../lib/wardrobe-id.mjs";
 
 const ALLOWED_CATEGORIES = new Set(["上装", "下装", "连衣裙", "外套", "鞋履", "配饰"]);
@@ -227,7 +233,7 @@ async function hasMatchingImageSignature(file: File) {
   return false;
 }
 
-export async function ensureWardrobeTables(db: D1Database) {
+async function initializeWardrobeTables(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_items (
       id TEXT PRIMARY KEY NOT NULL,
@@ -254,6 +260,7 @@ export async function ensureWardrobeTables(db: D1Database) {
     db.prepare(`CREATE TABLE IF NOT EXISTS wardrobe_image_cleanup (
       image_key TEXT PRIMARY KEY NOT NULL,
       owner_email TEXT NOT NULL,
+      upload_state TEXT NOT NULL DEFAULT 'ready',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS wardrobe_cleanup_owner_idx ON wardrobe_image_cleanup (owner_email)"),
@@ -274,15 +281,38 @@ export async function ensureWardrobeTables(db: D1Database) {
       PRIMARY KEY (owner_email, request_id, image_key)
     )`),
   ]);
+  const cleanupColumns = await db
+    .prepare("PRAGMA table_info(wardrobe_image_cleanup)")
+    .all<{ name: string }>();
+  if (!cleanupColumns.results.some((column) => column.name === "upload_state")) {
+    try {
+      await db.prepare(
+        "ALTER TABLE wardrobe_image_cleanup ADD COLUMN upload_state TEXT NOT NULL DEFAULT 'ready'",
+      ).run();
+    } catch (error) {
+      // Concurrent first requests can both observe the legacy schema. Ignore
+      // only the proven duplicate-column race after another request wins.
+      const refreshedColumns = await db
+        .prepare("PRAGMA table_info(wardrobe_image_cleanup)")
+        .all<{ name: string }>();
+      if (!refreshedColumns.results.some((column) => column.name === "upload_state")) {
+        throw error;
+      }
+    }
+  }
 }
+
+export const ensureWardrobeTables = createPerBindingInitializer(initializeWardrobeTables);
 
 async function cleanupPendingImages(db: D1Database) {
   try {
     await db.prepare(`DELETE FROM wardrobe_image_cleanup
-      WHERE image_key IN (SELECT image_key FROM wardrobe_items WHERE image_key IS NOT NULL)`).run();
+      WHERE upload_state = 'ready'
+        AND image_key IN (SELECT image_key FROM wardrobe_items WHERE image_key IS NOT NULL)`).run();
     const pending = await db
       .prepare(`SELECT image_key FROM wardrobe_image_cleanup
-        WHERE created_at <= datetime('now', '-10 minutes')
+        WHERE (upload_state = 'ready' AND created_at <= datetime('now', '-10 minutes'))
+          OR (upload_state = 'uploading' AND created_at <= datetime('now', '-${ABANDONED_IMAGE_UPLOAD_MINUTES} minutes'))
         ORDER BY created_at LIMIT 4`)
       .all<{ image_key: string }>();
     if (!pending.results.length) return;
@@ -301,6 +331,33 @@ async function cleanupPendingImages(db: D1Database) {
   } catch {
     // Cleanup should never block the user's wardrobe request.
   }
+}
+
+async function discardTrackedImage(
+  db: D1Database,
+  owner: string,
+  imageKey: string,
+) {
+  await (await getWardrobeImages()).delete(imageKey);
+  await db.batch([
+    db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ? AND owner_email = ?")
+      .bind(imageKey, owner),
+    db.prepare("DELETE FROM personal_data_clear_images WHERE image_key = ? AND owner_email = ?")
+      .bind(imageKey, owner),
+  ]);
+}
+
+async function releaseAttachedImageLease(
+  db: D1Database,
+  owner: string,
+  itemId: string,
+  imageKey: string,
+) {
+  await db.prepare(`DELETE FROM wardrobe_image_cleanup
+    WHERE image_key = ? AND owner_email = ? AND EXISTS (
+      SELECT 1 FROM wardrobe_items
+      WHERE owner_email = ? AND id = ? AND image_key = ?
+    )`).bind(imageKey, owner, owner, itemId, imageKey).run();
 }
 
 function privateImageUrl(id: unknown, expectedOwner: string) {
@@ -480,13 +537,49 @@ export async function POST(request: Request) {
       }
       imageType = validatedImageType;
       imageKey = `wardrobe/${encodeURIComponent(owner)}/${crypto.randomUUID()}`;
-      await db.prepare("INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email) VALUES (?, ?)")
-        .bind(imageKey, owner)
-        .run();
-      await (await getWardrobeImages()).put(imageKey, photo.stream(), {
-        httpMetadata: { contentType: validatedImageType },
-        customMetadata: { owner, itemId: id },
+      const images = await getWardrobeImages();
+      const markImageWriteFinished = async () => {
+        const marked = await db.prepare(`UPDATE wardrobe_image_cleanup
+          SET upload_state = 'ready', created_at = CURRENT_TIMESTAMP
+          WHERE image_key = ? AND owner_email = ? AND upload_state = 'uploading'`)
+          .bind(imageKey, owner)
+          .run();
+        if (marked.meta.changes === 1) return;
+        const existing = await db.prepare(`SELECT upload_state FROM wardrobe_image_cleanup
+          WHERE image_key = ? AND owner_email = ?`)
+          .bind(imageKey, owner)
+          .first<{ upload_state: string }>();
+        if (existing?.upload_state !== "ready") {
+          throw new Error("wardrobe image upload lease was lost");
+        }
+      };
+      const staged = await stageTrackedWardrobeImage({
+        reserve: async () => {
+          // This conditional insert and personal-data's generation rotation
+          // are serialized by D1. If reserve wins, clear must capture this
+          // lease; if clear wins, no R2 write is allowed to start.
+          const reservation = await db.prepare(`INSERT INTO wardrobe_image_cleanup (
+            image_key, owner_email, upload_state, created_at
+          ) SELECT ?, ?, 'uploading', CURRENT_TIMESTAMP
+          WHERE COALESCE(
+            (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
+            'initial'
+          ) = ?`)
+            .bind(imageKey, owner, owner, requestedGeneration)
+            .run();
+          return reservation.meta.changes === 1;
+        },
+        put: () => images.put(imageKey!, photo.stream(), {
+          httpMetadata: { contentType: validatedImageType },
+          customMetadata: { owner, itemId: id },
+        }),
+        markReady: markImageWriteFinished,
+        markFailed: markImageWriteFinished,
+        discard: () => discardTrackedImage(db, owner, imageKey!),
       });
+      if (staged.status === "stale") {
+        return staleDataGenerationResponse(await currentDataGeneration(db, owner));
+      }
     }
 
     const values = {
@@ -564,8 +657,7 @@ export async function POST(request: Request) {
       if (insertResult.meta.changes !== 1) {
         if (imageKey) {
           try {
-            await (await getWardrobeImages()).delete(imageKey);
-            await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
+            await discardTrackedImage(db, owner, imageKey);
           } catch {
             // The durable cleanup row remains so a later request can safely retry.
           }
@@ -607,19 +699,34 @@ export async function POST(request: Request) {
         );
       }
     } catch (error) {
-      if (imageKey) {
-        try {
-          await (await getWardrobeImages()).delete(imageKey);
-          await db.prepare("DELETE FROM wardrobe_image_cleanup WHERE image_key = ?").bind(imageKey).run();
-        } catch {
-          // The durable cleanup row remains so a later request can retry safely.
-        }
+      let replay: Record<string, unknown> | null;
+      try {
+        replay = await db
+          .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? AND id = ?")
+          .bind(owner, id)
+          .first<Record<string, unknown>>();
+      } catch {
+        // The commit result is ambiguous. Keep the R2 object and its durable
+        // lease until a later request can prove whether the item exists.
+        throw error;
       }
-      const replay = await db
-        .prepare("SELECT * FROM wardrobe_items WHERE owner_email = ? AND id = ?")
-        .bind(owner, id)
-        .first<Record<string, unknown>>();
       if (replay) {
+        const imageResolution = stagedImageResolution(
+          imageKey,
+          typeof replay.image_key === "string" ? replay.image_key : null,
+        );
+        if (imageKey && imageResolution !== "none") {
+          try {
+            if (imageResolution === "attached") {
+              await releaseAttachedImageLease(db, owner, id, imageKey);
+            } else {
+              await discardTrackedImage(db, owner, imageKey);
+            }
+          } catch {
+            // A referenced image stays intact; an unreferenced image remains
+            // tracked for request-driven cleanup.
+          }
+        }
         return Response.json(
           {
             item: rowToItem({ ...replay, client_id: clientId }, expectedOwner),
@@ -628,15 +735,18 @@ export async function POST(request: Request) {
           { status: 200, headers: dataGenerationHeaders(requestedGeneration) },
         );
       }
+      if (imageKey) {
+        try {
+          await discardTrackedImage(db, owner, imageKey);
+        } catch {
+          // The durable cleanup row remains so a later request can safely retry.
+        }
+      }
       throw error;
     }
     if (imageKey) {
       try {
-        await db.prepare(`DELETE FROM wardrobe_image_cleanup
-          WHERE image_key = ? AND EXISTS (
-            SELECT 1 FROM wardrobe_items
-            WHERE owner_email = ? AND id = ? AND image_key = ?
-          )`).bind(imageKey, owner, id, imageKey).run();
+        await releaseAttachedImageLease(db, owner, id, imageKey);
       } catch {
         // A later cleanup pass removes rows that now reference a saved garment.
       }
@@ -702,7 +812,8 @@ export async function DELETE(request: Request) {
         .bind(owner, owner, requestedGeneration)
         .all<{ image_key: string }>();
       await db.batch([
-        db.prepare(`INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
+        // IGNORE deliberately preserves a concurrently uploading lease.
+        db.prepare(`INSERT OR IGNORE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
           SELECT image_key, owner_email, CURRENT_TIMESTAMP FROM wardrobe_items
           WHERE owner_email = ? AND image_key IS NOT NULL AND COALESCE(
             (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
@@ -778,7 +889,8 @@ export async function DELETE(request: Request) {
     }
     if (found?.image_key) {
       statements.push(
-        db.prepare(`INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
+        // IGNORE deliberately preserves a concurrently uploading lease.
+        db.prepare(`INSERT OR IGNORE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
           SELECT image_key, owner_email, CURRENT_TIMESTAMP FROM wardrobe_items
           WHERE owner_email = ? AND id = ? AND image_key IS NOT NULL AND COALESCE(
             (SELECT generation FROM owner_data_generations WHERE owner_email = ?),

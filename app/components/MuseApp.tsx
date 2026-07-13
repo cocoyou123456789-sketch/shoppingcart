@@ -54,6 +54,7 @@ import {
 } from "../lib/try-on-state.mjs";
 import {
   clearMutationAction,
+  clearRetryDelayMs,
   clearMarkerHydrationAction,
   clearMarkerStorageKey,
   clearMarkerWriteAction,
@@ -67,11 +68,14 @@ import {
   serializeClearMarker,
   serializeFailedClearMarker,
   snapshotMatchesClearSignal,
+  waitForActiveClearRetry,
 } from "../lib/storage-coordination.mjs";
 import {
   hasPendingWardrobeItems,
+  queuedWardrobeDeletionAction,
   removeWardrobeIdentity,
   replaceSyncedWardrobeItem,
+  stageQueuedWardrobeDeletion,
 } from "../lib/wardrobe-sync.mjs";
 import {
   shouldKeepWardrobeValidationOpen,
@@ -108,6 +112,8 @@ type LocalSnapshot = {
 
 type DeviceSaveResult = "complete" | "metadata-only" | "unchanged" | "failed";
 type GuardedDeviceSaveResult = DeviceSaveResult | "superseded" | "incompatible";
+type DeviceSnapshot = Omit<LocalSnapshot, "version" | "updatedAt">;
+type DeviceSnapshotFactory = (current: DeviceSnapshot) => DeviceSnapshot;
 type DataMode = "连接中" | "云端已同步" | "部分已同步" | "等待选择" | "正在本机保存" | "本机已保存" | "仅本次有效";
 type PendingCloudMutation = {
   promise: Promise<Response>;
@@ -560,6 +566,7 @@ export function MuseApp({
   dataModeRef.current = dataMode;
   const [ready, setReady] = useState(false);
   const [clearingData, setClearingData] = useState(false);
+  const [clearRetryPending, setClearRetryPending] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [pendingTryOnAnnouncement, setPendingTryOnAnnouncement] = useState("");
   const [externalUpdateAvailable, setExternalUpdateAvailable] = useState(false);
@@ -593,6 +600,7 @@ export function MuseApp({
     [],
   );
   const mainRef = useRef<HTMLElement>(null);
+  const clearRetryButtonRef = useRef<HTMLButtonElement>(null);
   const externalUpdateRef = useRef<HTMLElement>(null);
   const dialogOpenerRef = useRef<HTMLElement | null>(null);
   const previousView = useRef<View>(view);
@@ -644,6 +652,14 @@ export function MuseApp({
     profileRevision: profileRevision.current,
   };
   cartProductIds.current = new Set(cart.map((product) => product.id));
+
+  useEffect(() => {
+    if (!clearRetryPending || clearingData) return;
+    const frame = window.requestAnimationFrame(() => {
+      clearRetryButtonRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [clearRetryPending, clearingData]);
 
   const handleSessionChangedResponse = useCallback(function handleSessionChangedResponse(
     response: Response,
@@ -850,14 +866,19 @@ export function MuseApp({
     return false;
   }, [storageKey]);
 
-  const requestDeviceSnapshotWrite = useCallback(function requestDeviceSnapshotWrite(): Promise<GuardedDeviceSaveResult> {
+  const requestDeviceSnapshotWrite = useCallback(function requestDeviceSnapshotWrite(
+    createSnapshot?: DeviceSnapshotFactory,
+  ): Promise<GuardedDeviceSaveResult> {
     return deviceWriteQueue.current!.enqueue(async () => {
+      const snapshotAtWrite = createSnapshot
+        ? createSnapshot(latestSnapshot.current)
+        : latestSnapshot.current;
       const saveAndConfirm = async (needsFallbackDelay: boolean) => {
         if (needsFallbackDelay) unlockedDeviceWritePending.current = true;
         const coordinationGenerationAtWrite = ++deviceCoordinationGeneration.current;
         const generationAtWrite = localChangeGeneration.current;
         const clearSignalAtWrite = observedClearSignal.current;
-        const result = writeCurrentLocalSnapshot(latestSnapshot.current);
+        const result = writeCurrentLocalSnapshot(snapshotAtWrite);
         if (
           result !== "complete" &&
           result !== "metadata-only" &&
@@ -1269,6 +1290,7 @@ export function MuseApp({
         setCart([]);
         setSavedProductIds([]);
         setDailyPreferences(DEFAULT_DAILY_PREFERENCES);
+        setClearRetryPending(false);
         setClearingData(true);
         setReady(true);
       });
@@ -1412,6 +1434,7 @@ export function MuseApp({
       });
       hydrated.current = true;
       setClearingData(false);
+      setClearRetryPending(false);
       setDataMode(
         usesDeviceOnlyStorage()
           ? boundaryResult.saveResult === "failed" ||
@@ -1447,6 +1470,7 @@ export function MuseApp({
       // from failed back to pending to run the remote-clear reset again.
       lastAppliedClearSignal.current = null;
       setClearingData(false);
+      setClearRetryPending(true);
       setDataMode(
         usesDeviceOnlyStorage()
           ? isClearedLocalSnapshot(storageKey)
@@ -1454,8 +1478,10 @@ export function MuseApp({
             : "仅本次有效"
           : "部分已同步",
       );
-      setToast("本机资料已清空；云端还没有全部清除，请检查网络后重试");
-      window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
+      setToast("页面中的资料已清空；本机或云端副本仍需继续清除，请检查网络后重试");
+      window.requestAnimationFrame(() => {
+        clearRetryButtonRef.current?.focus({ preventScroll: true });
+      });
     };
 
     const markerAtSetup = readActiveClearMarker(storageKey);
@@ -1760,6 +1786,7 @@ export function MuseApp({
         setSavedProductIds([]);
         setDailyPreferences(DEFAULT_DAILY_PREFERENCES);
         setDataMode(storageOwner ? "部分已同步" : "本机已保存");
+        setClearRetryPending(!pending);
         setClearingData(pending);
         setReady(true);
       });
@@ -1773,7 +1800,7 @@ export function MuseApp({
     if (clearHydrationAction === "hold-failed") {
       hydrateClearBoundary(false);
       lastAppliedClearSignal.current = null;
-      announceClearRecovery("本机资料已清空；云端还没有全部清除，请重试清除");
+      announceClearRecovery("页面中的资料已清空；本机或云端副本仍需继续清除");
       return () => {
         cancelled = true;
       };
@@ -1833,6 +1860,7 @@ export function MuseApp({
             // Device-only mode can continue in memory when storage is blocked.
           }
           setClearingData(false);
+          setClearRetryPending(false);
           announceClearRecovery("个人资料清除已完成，衣橱现在是空的");
           window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
         })();
@@ -1843,9 +1871,21 @@ export function MuseApp({
 
       const recoveryControllers = new Set<AbortController>();
       let retryTimer: number | null = null;
-      const waitBeforeRetry = () => new Promise<void>((resolve) => {
-        retryTimer = window.setTimeout(resolve, 2_000);
+      let finishRetryWait: (() => void) | null = null;
+      const retrySleep = (duration: number) => new Promise<void>((resolve) => {
+        finishRetryWait = resolve;
+        retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          finishRetryWait = null;
+          resolve();
+        }, duration);
       });
+      const waitBeforeRetry = (retryAfter: string | null) =>
+        waitForActiveClearRetry(
+          clearRetryDelayMs(retryAfter),
+          recoveryStillActive,
+          retrySleep,
+        );
       void (async () => {
         let response: Response | null = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1876,8 +1916,10 @@ export function MuseApp({
           }
           if (!recoveryStillActive()) return;
           if (response?.ok || response?.status === 409) break;
-          if (attempt < 2) await waitBeforeRetry();
-          if (!recoveryStillActive()) return;
+          if (
+            attempt < 2 &&
+            !await waitBeforeRetry(response?.headers.get("retry-after") ?? null)
+          ) return;
         }
         if (!recoveryStillActive()) return;
         const recoveredGeneration = response?.headers
@@ -1943,7 +1985,8 @@ export function MuseApp({
         });
         if (!accepted || !recoveryOwnsBoundary()) return;
         setClearingData(false);
-        setToast("本机资料已清空；云端清除仍未完成，请检查网络后重试");
+        setClearRetryPending(true);
+        setToast("页面中的资料已清空；本机或云端副本仍需继续清除，请检查网络后重试");
         window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
       })();
       return () => {
@@ -1951,6 +1994,8 @@ export function MuseApp({
         recoveryControllers.forEach((controller) => controller.abort());
         recoveryControllers.clear();
         if (retryTimer !== null) window.clearTimeout(retryTimer);
+        finishRetryWait?.();
+        finishRetryWait = null;
       };
     }
     const hydrateDeviceState = () => {
@@ -2647,7 +2692,7 @@ export function MuseApp({
     if (!window.confirm(`确定从衣橱移除“${item.name}”吗？这不会影响真实购买记录。`)) return;
     const requestEpoch = mutationEpoch.current;
     let deletedFromCloud = false;
-    let queuedCloudDeletion = false;
+    let needsQueuedCloudDeletion = false;
     const clientId = item.clientId && isClientWardrobeId(item.clientId)
       ? item.clientId
       : item.source === "我的衣服" && isClientWardrobeId(item.id)
@@ -2683,8 +2728,7 @@ export function MuseApp({
           setToast("云端删除没有成功，这件衣服仍保留在衣橱中");
           return;
         }
-        deletedWardrobeClientIds.current.add(clientId);
-        queuedCloudDeletion = true;
+        needsQueuedCloudDeletion = true;
       }
     }
     const removedIds = [item.id, expectedCloudId].filter((id): id is string => Boolean(id));
@@ -2704,6 +2748,55 @@ export function MuseApp({
             outerwearId: latestSnapshot.current.outfit?.outerwearId === item.id ? undefined : latestSnapshot.current.outfit?.outerwearId,
           },
         };
+    if (needsQueuedCloudDeletion && clientId) {
+      let stagedSnapshot: DeviceSnapshot | null = null;
+      const saveResult = await requestDeviceSnapshotWrite((currentSnapshot) => {
+        stagedSnapshot = stageQueuedWardrobeDeletion(
+          currentSnapshot,
+          clientId,
+          removedIds,
+        ) as DeviceSnapshot;
+        return stagedSnapshot;
+      });
+      if (mutationEpoch.current !== requestEpoch) return;
+      if (queuedWardrobeDeletionAction(saveResult) !== "commit" || !stagedSnapshot) {
+        if (saveResult === "superseded") {
+          setDataMode("等待选择");
+          setToast("检测到另一标签页的更新；这件衣服仍保留，请处理更新后再试");
+        } else if (saveResult === "incompatible") {
+          setDataMode("部分已同步");
+          setToast("本机资料来自更新版本；这件衣服仍保留，请在新版本中重试");
+        } else {
+          setDataMode("部分已同步");
+          setToast("浏览器未能保存离线删除；这件衣服仍保留，请恢复本机存储后重试");
+        }
+        return;
+      }
+
+      deletedWardrobeClientIds.current.add(clientId);
+      const currentRemoved = removeWardrobeIdentity(
+        latestSnapshot.current.wardrobe,
+        latestSnapshot.current.outfit ?? {},
+        clientId,
+        removedIds,
+      );
+      latestSnapshot.current = {
+        ...latestSnapshot.current,
+        wardrobe: currentRemoved.wardrobe,
+        outfit: currentRemoved.outfit,
+        deletedWardrobeClientIds: [...deletedWardrobeClientIds.current],
+      };
+      flushSync(() => {
+        setWardrobe(currentRemoved.wardrobe);
+        setOutfit(currentRemoved.outfit);
+      });
+      // Keep this committed deletion protected as local work until the normal
+      // autosave confirms the post-render snapshot as well.
+      markLocalChange();
+      setToast(`${item.name} 已从本机移除；联网后会继续清理云端副本`);
+      return;
+    }
+
     flushSync(() => {
       setWardrobe(removed.wardrobe);
       setOutfit(removed.outfit);
@@ -2721,11 +2814,11 @@ export function MuseApp({
         );
       }
     }
-    await requestDeviceSnapshotWrite();
+    const saveResult = await requestDeviceSnapshotWrite();
     if (mutationEpoch.current !== requestEpoch) return;
     setToast(
-      queuedCloudDeletion
-        ? `${item.name} 已从本机移除；联网后会继续清理云端副本`
+      saveResult === "failed" && !deletedFromCloud
+        ? `${item.name} 已从本次衣橱移除，但浏览器未能保存这项修改`
         : `${item.name} 已从衣橱移除`,
     );
   }
@@ -3055,7 +3148,9 @@ export function MuseApp({
   async function clearPersonalData() {
     if (clearingData) return;
     const confirmed = window.confirm(
-      "确定清除衣橱、身体参数、搭配、收藏和虚拟购物袋吗？登录版也会清除云端资料。这个操作不能撤销。",
+      clearRetryPending
+        ? "继续清除尚未完成的本机或云端副本吗？页面中的资料已经清空。"
+        : "确定清除衣橱、身体参数、搭配、收藏和虚拟购物袋吗？登录版也会清除云端资料。这个操作不能撤销。",
     );
     if (!confirmed) return;
 
@@ -3262,6 +3357,7 @@ export function MuseApp({
       setCart([]);
       setSavedProductIds([]);
       setDailyPreferences(DEFAULT_DAILY_PREFERENCES);
+      setClearRetryPending(false);
       setClearingData(true);
     });
 
@@ -3284,6 +3380,7 @@ export function MuseApp({
           isClearedLocalSnapshot(LOCAL_SNAPSHOT_KEY));
     const localCleared = currentCleared && legacyCleared;
     let enteredClearUi = true;
+    let retryLockRequired = false;
 
     try {
       if (!deviceOnly) {
@@ -3309,12 +3406,24 @@ export function MuseApp({
             );
           } catch {
             if (!operationIsPending()) return;
-            if (attempt < 2 && navigator.onLine) continue;
+            if (attempt < 2 && navigator.onLine) {
+              if (!await waitForActiveClearRetry(
+                clearRetryDelayMs(null),
+                operationIsPending,
+              )) return;
+              continue;
+            }
             throw new Error("cloud deletion unavailable");
           }
           if (!operationIsPending()) return;
           if (deletionResponse.ok) break;
-          if (deletionResponse.status === 503 && attempt < 2) continue;
+          if (deletionResponse.status === 503 && attempt < 2) {
+            if (!await waitForActiveClearRetry(
+              clearRetryDelayMs(deletionResponse.headers.get("retry-after")),
+              operationIsPending,
+            )) return;
+            continue;
+          }
           break;
         }
         if (!deletionResponse) throw new Error("cloud deletion unavailable");
@@ -3330,7 +3439,10 @@ export function MuseApp({
           cloudGeneration.current = authoritativeGeneration;
           const refreshedSnapshot = { ...emptySnapshot, cloudGeneration: authoritativeGeneration };
           latestSnapshot.current = refreshedSnapshot;
-          if (!await publishClearResult(true, refreshedSnapshot)) return;
+          if (!await publishClearResult(true, refreshedSnapshot)) {
+            if (operationIsPending()) throw new Error("clear completion unavailable");
+            return;
+          }
           window.location.reload();
           return;
         }
@@ -3348,9 +3460,15 @@ export function MuseApp({
           cloudGeneration: confirmedGeneration,
         };
         latestSnapshot.current = completedSnapshot;
-        if (!await publishClearResult(true, completedSnapshot)) return;
+        if (!await publishClearResult(true, completedSnapshot)) {
+          if (operationIsPending()) throw new Error("clear completion unavailable");
+          return;
+        }
       } else {
-        if (!await publishClearResult(true)) return;
+        if (!await publishClearResult(true)) {
+          if (operationIsPending()) throw new Error("clear completion unavailable");
+          return;
+        }
       }
 
       setDataMode(
@@ -3369,18 +3487,47 @@ export function MuseApp({
             ? "页面中的资料已清空；浏览器阻止清除本机副本，请在网站数据设置中删除"
             : "云端资料已清除；浏览器阻止清除本机副本，请在网站数据设置中删除",
       );
+      setClearRetryPending(false);
     } catch {
-      if (!operationIsPending() || !await publishClearResult(false)) return;
+      if (!operationIsPending()) return;
+      // The recovery lock is a UI safety boundary, not a reward for being able
+      // to persist the failed marker. If storage starts rejecting writes here,
+      // the still-pending snapshot must remain impossible to edit.
+      retryLockRequired = true;
+      setClearRetryPending(true);
+      let failurePublished = false;
+      try {
+        failurePublished = await publishClearResult(false);
+      } catch {
+        // The in-memory recovery lock remains authoritative for this session.
+      }
+      if (!operationOwnsBoundary()) return;
       setDataMode(deviceOnly ? (localCleared ? "本机已保存" : "仅本次有效") : "部分已同步");
       setToast(
-        localCleared
+        !failurePublished
+          ? "页面中的资料已清空；浏览器未能保存清除进度，请恢复本机存储后继续"
+          : localCleared
           ? "本机资料已清除；云端还没有全部清除，请检查网络后重试"
           : "页面资料已清空，但本机副本和云端还没有全部清除，请检查设置与网络",
       );
     } finally {
       if (operationOwnsBoundary()) {
-        flushSync(() => setClearingData(false));
+        const activeMarker = readActiveClearMarker(storageKey);
+        const matchingTerminalStatus = activeMarker && activeMarker.signal === nextClearSignal
+          ? activeMarker.status
+          : null;
+        const keepRetryLock =
+          matchingTerminalStatus === "failed" ||
+          (retryLockRequired && matchingTerminalStatus !== "complete");
+        flushSync(() => {
+          setClearRetryPending(keepRetryLock);
+          setClearingData(false);
+        });
         window.requestAnimationFrame(() => {
+          if (clearRetryButtonRef.current) {
+            clearRetryButtonRef.current.focus({ preventScroll: true });
+            return;
+          }
           const heading = mainRef.current?.querySelector<HTMLElement>("h1");
           if (!heading) return;
           heading.tabIndex = -1;
@@ -3393,7 +3540,8 @@ export function MuseApp({
     }
   }
 
-  const backgroundInert = clearingData || cartOpen || addOpen || celebrationOpen;
+  const backgroundInert =
+    clearingData || clearRetryPending || cartOpen || addOpen || celebrationOpen;
 
   return (
     <>
@@ -3496,6 +3644,7 @@ export function MuseApp({
             onDelete={deleteWardrobeItem}
             onClearData={clearPersonalData}
             clearingData={clearingData}
+            clearRetryPending={clearRetryPending}
             onWear={(item) => {
               wearItem(item);
               navigate("studio");
@@ -3574,6 +3723,44 @@ export function MuseApp({
             navigate("closet");
           }}
         />
+      )}
+      {clearRetryPending && !clearingData && (
+        <section
+          className="clear-retry-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="clear-retry-title"
+          aria-describedby="clear-retry-copy"
+          onKeyDown={(event) => {
+            if (event.key !== "Tab") return;
+            event.preventDefault();
+            clearRetryButtonRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <div className="clear-retry-dialog__panel">
+            <p className="eyebrow">PRIVACY CLEANUP</p>
+            <h2 id="clear-retry-title">资料清除还需要继续</h2>
+            <p id="clear-retry-copy">
+              页面中的资料已经清空，但本机或云端副本仍需继续处理。为避免新内容在重试时被误删，完成清除前已暂停编辑。
+            </p>
+            <button
+              ref={clearRetryButtonRef}
+              type="button"
+              className="button button--dark"
+              onClick={(event) => {
+                event.currentTarget.disabled = true;
+                void clearPersonalData().finally(() => {
+                  const retryButton = clearRetryButtonRef.current;
+                  if (!retryButton) return;
+                  retryButton.disabled = false;
+                  retryButton.focus({ preventScroll: true });
+                });
+              }}
+            >
+              继续清除剩余副本
+            </button>
+          </div>
+        </section>
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
       {clearingData && (

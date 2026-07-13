@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clearMutationAction,
+  clearRetryDelayMs,
   clearMarkerHydrationAction,
   clearMarkerStorageKey,
   clearMarkerWriteAction,
@@ -16,6 +17,7 @@ import {
   serializeFailedClearMarker,
   serializeClearMarker,
   snapshotMatchesClearSignal,
+  waitForActiveClearRetry,
 } from "../app/lib/storage-coordination.mjs";
 
 test("a stale clear never rebases itself onto a newer cloud generation", () => {
@@ -23,6 +25,46 @@ test("a stale clear never rebases itself onto a newer cloud generation", () => {
   assert.equal(clearMutationAction(409, "initial", "cloud-next"), "stale");
   assert.notEqual(clearMutationAction(409, "initial", "cloud-next"), "retry");
   assert.equal(clearMutationAction(503, "initial", "cloud-next"), "failed");
+});
+
+test("personal-data clear retries respect bounded Retry-After values", () => {
+  const now = Date.parse("2026-07-14T08:00:00.000Z");
+  assert.equal(clearRetryDelayMs("2", now), 2_000);
+  assert.equal(clearRetryDelayMs("120", now), 5_000);
+  assert.equal(clearRetryDelayMs("9".repeat(400), now), 5_000);
+  assert.equal(
+    clearRetryDelayMs("Tue, 14 Jul 2026 08:00:03 GMT", now),
+    3_000,
+  );
+  assert.equal(clearRetryDelayMs("0", now), 250);
+  assert.equal(clearRetryDelayMs("not-a-delay", now), 2_000);
+  assert.equal(clearRetryDelayMs(null, now), 2_000);
+});
+
+test("a clear retry wait stops promptly when its operation is replaced", async () => {
+  let active = true;
+  const sleeps = [];
+  const completed = await waitForActiveClearRetry(
+    2_000,
+    () => active,
+    async (duration) => {
+      sleeps.push(duration);
+      active = false;
+    },
+  );
+  assert.equal(completed, false);
+  assert.deepEqual(sleeps, [250]);
+
+  const fullWait = [];
+  assert.equal(
+    await waitForActiveClearRetry(
+      600,
+      () => true,
+      async (duration) => fullWait.push(duration),
+    ),
+    true,
+  );
+  assert.deepEqual(fullWait, [250, 250, 100]);
 });
 
 test("clear markers are owner-keyed, validated, and generation-safe", () => {

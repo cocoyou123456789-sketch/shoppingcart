@@ -1,0 +1,1 @@
+ALTER TABLE `wardrobe_image_cleanup` ADD `upload_state` text DEFAULT 'ready' NOT NULL;

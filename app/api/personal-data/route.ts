@@ -9,10 +9,15 @@ import {
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
 import { requireExpectedOwner } from "../../lib/request-owner";
+import { createPerBindingInitializer } from "../../lib/per-binding-initializer.mjs";
+import {
+  ABANDONED_IMAGE_UPLOAD_MINUTES,
+  planClearedImageDrain,
+} from "../../lib/wardrobe-image-lifecycle.mjs";
 import { ensureProfileTable } from "../profile/route";
 import { ensureWardrobeTables } from "../wardrobe/route";
 
-async function ensureClearTables(db: D1Database) {
+async function initializeClearTables(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS personal_data_clear_operations (
       owner_email TEXT NOT NULL,
@@ -33,6 +38,8 @@ async function ensureClearTables(db: D1Database) {
   ]);
 }
 
+const ensureClearTables = createPerBindingInitializer(initializeClearTables);
+
 async function clearOperation(
   db: D1Database,
   owner: string,
@@ -45,12 +52,24 @@ async function clearOperation(
 }
 
 async function drainClearedImages(db: D1Database, owner: string, requestId: string) {
-  const rows = await db.prepare(`SELECT image_key FROM personal_data_clear_images
-    WHERE owner_email = ? AND request_id = ?`)
+  const rows = await db.prepare(`SELECT
+      personal_data_clear_images.image_key,
+      wardrobe_image_cleanup.upload_state,
+      CASE
+        WHEN wardrobe_image_cleanup.upload_state = 'uploading'
+          AND wardrobe_image_cleanup.created_at <= datetime('now', '-${ABANDONED_IMAGE_UPLOAD_MINUTES} minutes')
+        THEN 1 ELSE 0
+      END AS upload_abandoned
+    FROM personal_data_clear_images
+    LEFT JOIN wardrobe_image_cleanup
+      ON wardrobe_image_cleanup.owner_email = personal_data_clear_images.owner_email
+      AND wardrobe_image_cleanup.image_key = personal_data_clear_images.image_key
+    WHERE personal_data_clear_images.owner_email = ?
+      AND personal_data_clear_images.request_id = ?`)
     .bind(owner, requestId)
-    .all<{ image_key: string }>();
-  if (!rows.results.length) return;
-  const keys = rows.results.map((row) => row.image_key);
+    .all<{ image_key: string; upload_state: string | null; upload_abandoned: number }>();
+  if (!rows.results.length) return true;
+  const { deletableKeys: keys, pendingKeys } = planClearedImageDrain(rows.results);
   const images = await getWardrobeImages();
   for (let start = 0; start < keys.length; start += 1000) {
     await images.delete(keys.slice(start, start + 1000));
@@ -66,6 +85,7 @@ async function drainClearedImages(db: D1Database, owner: string, requestId: stri
       ).bind(owner, requestId, ...slice),
     ]);
   }
+  return pendingKeys.length === 0;
 }
 
 export async function DELETE(request: Request) {
@@ -91,7 +111,16 @@ export async function DELETE(request: Request) {
     const replay = await clearOperation(db, owner, requestId);
     if (replay?.status === "done") {
       try {
-        await drainClearedImages(db, owner, requestId);
+        const drained = await drainClearedImages(db, owner, requestId);
+        if (!drained) {
+          return Response.json(
+            { error: "personal data is inaccessible; a private image upload is still finishing" },
+            {
+              status: 503,
+              headers: { ...dataGenerationHeaders(replay.next_generation), "retry-after": "2" },
+            },
+          );
+        }
       } catch {
         return Response.json(
           { error: "personal data is inaccessible; private image cleanup is still retrying" },
@@ -146,7 +175,8 @@ export async function DELETE(request: Request) {
           WHERE owner_email = ? AND request_id = ? AND status = 'pending'
         )`)
         .bind(owner, requestId, owner, owner, requestId),
-      db.prepare(`INSERT OR REPLACE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
+      // Never replace an uploading lease with the default ready state.
+      db.prepare(`INSERT OR IGNORE INTO wardrobe_image_cleanup (image_key, owner_email, created_at)
         SELECT image_key, owner_email, CURRENT_TIMESTAMP FROM wardrobe_items
         WHERE owner_email = ? AND image_key IS NOT NULL AND EXISTS (
           SELECT 1 FROM personal_data_clear_operations
@@ -180,7 +210,16 @@ export async function DELETE(request: Request) {
       return staleDataGenerationResponse(await currentDataGeneration(db, owner));
     }
     try {
-      await drainClearedImages(db, owner, requestId);
+      const drained = await drainClearedImages(db, owner, requestId);
+      if (!drained) {
+        return Response.json(
+          { error: "personal data is inaccessible; a private image upload is still finishing" },
+          {
+            status: 503,
+            headers: { ...dataGenerationHeaders(completed.next_generation), "retry-after": "2" },
+          },
+        );
+      }
     } catch {
       return Response.json(
         { error: "personal data is inaccessible; private image cleanup is still retrying" },

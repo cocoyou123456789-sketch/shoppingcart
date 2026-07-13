@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   nextOutfitRotationSeed,
   rankOutfitSelections,
@@ -8,6 +8,21 @@ import {
 import type { ClosetCategory, WardrobeItem } from "../lib/muse-data";
 import { DAILY_OPTIONS, MiniGarment, todayLabel } from "./muse-view-shared";
 import type { DailyViewProps } from "./muse-view-types";
+
+const OCCASION_STYLES: Record<string, string[]> = {
+  通勤: ["利落", "轻松"],
+  上课: ["轻松", "利落"],
+  约会: ["温柔", "有点亮眼"],
+  运动: ["轻松"],
+  宅家: ["轻松", "温柔"],
+};
+
+const WEATHER_SEASONS: Record<string, string[]> = {
+  炎热: ["春夏", "四季"],
+  温和: ["春秋", "四季", "春夏"],
+  偏凉: ["春秋", "四季"],
+  下雨: ["四季", "春秋"],
+};
 
 export function DailyView({
   wardrobe,
@@ -18,48 +33,33 @@ export function DailyView({
 }: DailyViewProps) {
   const { weather, occasion, feeling, comfort } = preferences;
   const [seed, setSeed] = useState(0);
-  const occasionStyles: Record<string, string[]> = {
-    通勤: ["利落", "轻松"],
-    上课: ["轻松", "利落"],
-    约会: ["温柔", "有点亮眼"],
-    运动: ["轻松"],
-    宅家: ["轻松", "温柔"],
-  };
-  const weatherSeasons: Record<string, string[]> = {
-    炎热: ["春夏", "四季"],
-    温和: ["春秋", "四季", "春夏"],
-    偏凉: ["春秋", "四季"],
-    下雨: ["四季", "春秋"],
-  };
-  const scoreItem = (item: WardrobeItem) => {
-    let score = 0;
-    if (item.style === feeling) score += 8;
-    if (occasionStyles[occasion]?.includes(item.style)) score += 5;
-    if (weatherSeasons[weather]?.includes(item.season)) score += 4;
-    if (item.season === "四季") score += 1;
-    if (comfort === "方便走动" && (item.style === "轻松" || item.category === "下装")) score += 4;
-    if (comfort === "宽松" && (item.style === "轻松" || (item.chest ?? 0) - metrics.chest >= 10)) score += 4;
-    if (comfort === "不露肤" && ["下装", "外套"].includes(item.category)) score += 3;
-    if (comfort === "保暖" && (item.category === "外套" || item.season === "春秋")) score += 5;
-    if ((weather === "偏凉" || weather === "下雨") && item.category === "外套") score += 6;
-    return score;
-  };
-  const ranked = (category: ClosetCategory) => wardrobe
-    .filter((item) => item.category === category)
-    .sort((left, right) => scoreItem(right) - scoreItem(left) || left.id.localeCompare(right.id));
-  const tops = ranked("上装");
-  const bottoms = ranked("下装");
-  const dresses = ranked("连衣裙");
-  const outers = ranked("外套");
-  const needsOuterwear = weather === "偏凉" || weather === "下雨" || comfort === "保暖";
-  const scoredLooks = rankOutfitSelections({
-    tops,
-    bottoms,
-    dresses,
-    outers,
-    needsOuterwear,
-    scoreItem,
-  });
+  const scoredLooks = useMemo(() => {
+    const scoreItem = (item: WardrobeItem) => {
+      let score = 0;
+      if (item.style === feeling) score += 8;
+      if (OCCASION_STYLES[occasion]?.includes(item.style)) score += 5;
+      if (WEATHER_SEASONS[weather]?.includes(item.season)) score += 4;
+      if (item.season === "四季") score += 1;
+      if (comfort === "方便走动" && (item.style === "轻松" || item.category === "下装")) score += 4;
+      if (comfort === "宽松" && (item.style === "轻松" || (item.chest ?? 0) - metrics.chest >= 10)) score += 4;
+      if (comfort === "不露肤" && ["下装", "外套"].includes(item.category)) score += 3;
+      if (comfort === "保暖" && (item.category === "外套" || item.season === "春秋")) score += 5;
+      if ((weather === "偏凉" || weather === "下雨") && item.category === "外套") score += 6;
+      return score;
+    };
+    const ranked = (category: ClosetCategory) => wardrobe
+      .filter((item) => item.category === category)
+      .sort((left, right) => scoreItem(right) - scoreItem(left) || left.id.localeCompare(right.id));
+
+    return rankOutfitSelections({
+      tops: ranked("上装"),
+      bottoms: ranked("下装"),
+      dresses: ranked("连衣裙"),
+      outers: ranked("外套"),
+      needsOuterwear: weather === "偏凉" || weather === "下雨" || comfort === "保暖",
+      scoreItem,
+    });
+  }, [comfort, feeling, metrics.chest, occasion, wardrobe, weather]);
   const bestLook = scoredLooks[0];
   const alternatives = scoredLooks.slice(1);
   const alternativeOffset = alternatives.length ? seed % alternatives.length : 0;
@@ -85,7 +85,7 @@ export function DailyView({
         <button type="button" className="button button--primary" disabled={!canRotate} onClick={rotateSuggestions}>✦ {canRotate ? "换一组看看" : "没有更多组合"}</button>
       </section>
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        已按{weather}、{occasion}、{feeling}和{comfort}更新第 {seed + 1} 组搭配，共 {suggestions.length} 套
+        已按{weather}、{occasion}、{feeling}和{comfort}更新第 {alternativeOffset + 1} 组搭配，共 {suggestions.length} 套
       </p>
       <div className="suggestion-heading"><div><span>从 {wardrobe.length} 件衣服中组合</span><h2>为现在的你准备了 {suggestions.length} 套</h2></div><p>身高 {metrics.height} cm · 偏好「{comfort}」</p></div>
       {suggestions.length ? <section className="suggestion-grid">
