@@ -144,14 +144,27 @@ test("avatar zoom percentage is stable, bounded, and resilient to invalid input"
   assert.equal(avatarZoomPercent(Number.NaN, 9), 100);
 });
 
-test("avatar alternative text reflects body shape and selected garment categories", () => {
+test("avatar alternative text prioritizes garment names", () => {
   const description = avatarAriaDescription(
     { height: 168, bodyShape: "pear" },
-    { top: {}, bottom: {}, outerwear: {} },
+    {
+      top: { name: "云朵衬衫" },
+      bottom: { name: "垂感长裤" },
+      outerwear: { name: "燕麦风衣" },
+    },
   );
   assert.match(description, /168 厘米/);
   assert.match(description, /梨型/);
-  assert.match(description, /上装、下装、外套/);
+  assert.match(description, /云朵衬衫、垂感长裤、燕麦风衣/);
   assert.match(description, /正面、侧面和背面/);
   assert.match(description, /放大或缩小/);
+});
+
+test("avatar alternative text falls back to garment categories", () => {
+  const description = avatarAriaDescription(
+    { height: 172, bodyShape: "straight" },
+    { dress: { name: "   " }, outerwear: {} },
+  );
+  assert.match(description, /直筒型/);
+  assert.match(description, /连衣裙、外套/);
 });

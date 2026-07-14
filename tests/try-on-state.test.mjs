@@ -126,10 +126,10 @@ test("shoes and accessories do not change the current 3D outfit", () => {
 
 test("avatar garments are resolved by both selection id and expected category", () => {
   const wardrobe = [
-    { id: "top", category: "上装", color: "#111111", chest: 101, waist: 82, hips: 99, length: 66 },
-    { id: "bottom", category: "下装", color: "#222222", chest: 88, waist: 76, hips: 104, length: 98 },
-    { id: "dress", category: "连衣裙", color: "#333333", chest: 96, waist: 74, hips: 102, length: 112 },
-    { id: "coat", category: "外套", color: "#444444", chest: 110, waist: 94, hips: 112, length: 84 },
+    { id: "top", name: "云朵衬衫", category: "上装", color: "#111111", style: "通勤", chest: 101, waist: 82, hips: 99, length: 66 },
+    { id: "bottom", name: "垂感长裤", category: "下装", color: "#222222", style: "简约", chest: 88, waist: 76, hips: 104, length: 98 },
+    { id: "dress", name: "茶歇连衣裙", category: "连衣裙", color: "#333333", style: "浪漫", chest: 96, waist: 74, hips: 102, length: 112 },
+    { id: "coat", name: "燕麦风衣", category: "外套", color: "#444444", style: "经典", chest: 110, waist: 94, hips: 112, length: 84 },
   ];
 
   assert.deepEqual(
@@ -138,10 +138,10 @@ test("avatar garments are resolved by both selection id and expected category", 
       wardrobe,
     ),
     {
-      top: { color: "#111111", chest: 101, waist: 82, hips: 99, length: 66 },
-      bottom: { color: "#222222", chest: 88, waist: 76, hips: 104, length: 98 },
-      dress: { color: "#333333", chest: 96, waist: 74, hips: 102, length: 112 },
-      outerwear: { color: "#444444", chest: 110, waist: 94, hips: 112, length: 84 },
+      top: { name: "云朵衬衫", style: "通勤", color: "#111111", chest: 101, waist: 82, hips: 99, length: 66 },
+      bottom: { name: "垂感长裤", style: "简约", color: "#222222", chest: 88, waist: 76, hips: 104, length: 98 },
+      dress: { name: "茶歇连衣裙", style: "浪漫", color: "#333333", chest: 96, waist: 74, hips: 102, length: 112 },
+      outerwear: { name: "燕麦风衣", style: "经典", color: "#444444", chest: 110, waist: 94, hips: 112, length: 84 },
     },
   );
 });
@@ -165,7 +165,7 @@ test("missing and category-mismatched wardrobe ids are ignored by the avatar", (
       wardrobe,
     ),
     {
-      top: { color: "#right", chest: 100, waist: undefined, hips: undefined, length: undefined },
+      top: { name: undefined, style: undefined, color: "#right", chest: 100, waist: undefined, hips: undefined, length: undefined },
       bottom: undefined,
       dress: undefined,
       outerwear: undefined,

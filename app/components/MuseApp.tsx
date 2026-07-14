@@ -174,7 +174,6 @@ function clearedPersonalSnapshot(
 const INITIAL_OUTFIT: OutfitSelection = {
   topId: "w-cream-tee",
   bottomId: "w-green-pants",
-  outerwearId: "w-oat-coat",
 };
 
 const DEFAULT_DAILY_PREFERENCES: DailyPreferences = {

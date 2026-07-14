@@ -99,9 +99,19 @@ export function StudioView({
           }) : <div className="studio-list-empty"><span aria-hidden="true">◇</span><strong>这里还没有可试穿衣物</strong><p>上装、下装、连衣裙和外套会出现在这里。</p></div>}</div>
         </aside>
         <div className="studio-avatar-wrap">
-          <div className="studio-status"><span><i className="status-dot" /> 三维身形示意</span><b>{metrics.height} cm · {metrics.weight} kg</b></div>
-          <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
-          <div className="wearing-dock"><div><span>当前穿搭</span><div className="wearing-chips">{selected.length ? selected.map((item) => <button type="button" key={item.id} aria-label={`脱下${item.name}`} onClick={() => removeFromOutfit(item)}><i aria-hidden="true" style={{ background: item.color }} />{item.name}<b aria-hidden="true">×</b></button>) : <span>还没有穿上衣服</span>}</div></div><button type="button" className="reset-button" aria-label="清空当前试穿" disabled={!selected.length} onClick={() => { setOutfitStatus(`已清空当前试穿，共脱下 ${selected.length} 件衣物`); setOutfit({}); }}>清空试穿</button></div>
+          <div className="studio-avatar-viewport">
+            <div className="studio-status"><span><i className="status-dot" /> 更自然的人体比例预览</span><b>视觉参考 · {metrics.height} cm · {metrics.weight} kg</b></div>
+            <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
+            <p className="studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮</p>
+            <p className="studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放</p>
+          </div>
+          <section className="wearing-dock" aria-labelledby="wearing-dock-title">
+            <div>
+              <span id="wearing-dock-title">当前穿搭</span>
+              <div className="wearing-chips">{selected.length ? selected.map((item) => <button type="button" key={item.id} aria-label={`脱下${item.name}`} onClick={() => removeFromOutfit(item)}><i aria-hidden="true" style={{ background: item.color }} />{item.name}<b aria-hidden="true">×</b></button>) : <span>还没有穿上衣服</span>}</div>
+            </div>
+            <button type="button" className="reset-button" aria-label="清空当前试穿" disabled={!selected.length} onClick={() => { setOutfitStatus(`已清空当前试穿，共脱下 ${selected.length} 件衣物`); setOutfit({}); }}>清空试穿</button>
+          </section>
           <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{outfitStatus}</p>
         </div>
         <aside className="studio-panel body-panel" aria-labelledby="studio-body-title">

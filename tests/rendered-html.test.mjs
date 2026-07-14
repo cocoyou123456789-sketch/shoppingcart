@@ -341,12 +341,57 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     avatar,
     /const renderReady = renderStatus === "ready";[\s\S]*?!renderReady \?[\s\S]*?正在启动三维预览[\s\S]*?aria-label="三维分身已加载/,
   );
-  assert.match(avatar, /const armGeo = new CapsuleGeometry/);
-  assert.doesNotMatch(avatar, /armGeo\.clone\(\)|legGeo\.clone\(\)/);
+  assert.match(avatar, /ellipticalRingGeometry\(\s*profile\.torsoRings/);
+  assert.match(avatar, /"eye-white"/);
+  assert.match(avatar, /"nose-bridge"/);
+  assert.match(avatar, /renderer\.toneMapping = ACESFilmicToneMapping/);
+  assert.match(avatar, /avatarCameraFit\(\{/);
+  assert.match(avatar, /runtime\.fitView\(cameraViewRef\.current, true\)/);
+  assert.match(avatar, /ring\.xRadius \+ xClearance/);
+  assert.match(avatar, /MathUtils\.inverseLerp\(joints\.hip, joints\.waist, y\)/);
+  assert.match(avatar, /headGroup\.scale\.setScalar\(headScale\)/);
+  assert.match(avatar, /if \(rings\.length < 2 \|\| segments < 3\)/);
+  assert.match(avatar, /const cropped = garmentLooksLike\(top, \/短款\|露腰\|crop\/i\)/);
+  assert.doesNotMatch(avatar, /const armGeo = new CapsuleGeometry/);
   assert.match(studioView, /aria-labelledby="studio-closet-title"/);
   assert.match(studioView, /aria-labelledby="studio-body-title"/);
   assert.match(studioView, /id="studio-closet-title"/);
   assert.match(studioView, /id="studio-body-title"/);
+  assert.match(studioView, /更自然的人体比例预览/);
+  assert.match(studioView, /视觉参考 · \{metrics\.height\} cm · \{metrics\.weight\} kg/);
+  assert.match(
+    studioView,
+    /studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮/,
+  );
+  assert.match(
+    studioView,
+    /studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放/,
+  );
+  assert.match(
+    studioView,
+    /studio-input-hint--touch">[^<]+<\/p>\s*<\/div>\s*<section className="wearing-dock"/,
+    "the outfit dock must be a document-flow sibling of the 3D viewport",
+  );
+  assert.ok(
+    studioView.indexOf('<div className="studio-avatar-viewport">') <
+      studioView.indexOf('<section className="wearing-dock"'),
+    "the outfit dock must sit outside the 3D viewport",
+  );
+  assert.ok(
+    studioView.indexOf("<DeferredAvatar") < studioView.indexOf('<section className="wearing-dock"'),
+    "the outfit dock must follow the 3D stage in document flow",
+  );
+  const wearingDockRules = [...styles.matchAll(/\.wearing-dock\s*\{([^}]*)\}/g)];
+  assert.ok(wearingDockRules.length >= 1);
+  for (const [, declarations] of wearingDockRules) {
+    assert.doesNotMatch(declarations, /position:\s*absolute|\bbottom:|\bleft:|\bright:/);
+  }
+  assert.match(styles, /\.studio-avatar-wrap \.avatar-hint\s*\{\s*display:\s*none/);
+  assert.match(styles, /\.studio-input-hint--touch\s*\{\s*display:\s*none/);
+  assert.match(
+    styles,
+    /@media \(pointer: coarse\) \{[\s\S]*?\.studio-input-hint--pointer\s*\{\s*display:\s*none;[\s\S]*?\.studio-input-hint--touch\s*\{\s*display:\s*block;/,
+  );
   assert.match(studioView, /role="status" aria-live="polite" aria-atomic="true">\{outfitStatus\}/);
   assert.match(studioView, /setOutfitStatus\(initialOutfitStatus\)/);
   assert.match(studioView, /onInitialOutfitStatusAnnounced\?\.\(\)/);

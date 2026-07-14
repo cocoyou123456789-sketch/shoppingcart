@@ -120,10 +120,19 @@ export function avatarAriaDescription(metrics, outfit) {
     inverted: "倒三角型",
     apple: "苹果型",
   };
+  const garmentLabel = (garment, fallback) => {
+    if (!garment) return null;
+    const name = typeof garment.name === "string" ? garment.name.trim() : "";
+    return name || fallback;
+  };
   const garments = outfit?.dress
-    ? ["连衣裙"]
-    : [outfit?.top && "上装", outfit?.bottom && "下装"].filter(Boolean);
-  if (outfit?.outerwear) garments.push("外套");
+    ? [garmentLabel(outfit.dress, "连衣裙")]
+    : [
+        garmentLabel(outfit?.top, "上装"),
+        garmentLabel(outfit?.bottom, "下装"),
+      ].filter(Boolean);
+  const outerwear = garmentLabel(outfit?.outerwear, "外套");
+  if (outerwear) garments.push(outerwear);
   const outfitLabel = garments.length ? garments.join("、") : "尚未选择衣物";
   return `三维数字分身预览：身高 ${metrics.height} 厘米，${bodyShapeNames[metrics.bodyShape] ?? "自定义体型"}，${outfitLabel}。可使用下方按钮查看正面、侧面和背面，并放大或缩小。`;
 }

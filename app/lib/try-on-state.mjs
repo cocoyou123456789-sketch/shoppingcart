@@ -87,7 +87,7 @@ export function wearWardrobeItemAnnouncement(current, item) {
 
 /**
  * @param {{ topId?: string, bottomId?: string, dressId?: string, outerwearId?: string }} outfit
- * @param {Array<{ id: string, category: string, color: string, chest?: number, waist?: number, hips?: number, length?: number }>} wardrobe
+ * @param {Array<{ id: string, name?: string, category: string, color: string, style?: string, chest?: number, waist?: number, hips?: number, length?: number }>} wardrobe
  */
 export function avatarOutfitFromSelection(outfit, wardrobe) {
   /**
@@ -100,6 +100,8 @@ export function avatarOutfitFromSelection(outfit, wardrobe) {
     );
     if (!item) return undefined;
     return {
+      name: item.name,
+      style: item.style,
       color: item.color,
       chest: item.chest,
       waist: item.waist,
