@@ -8,6 +8,7 @@ import {
   wearWardrobeItemAnnouncement,
 } from "../lib/try-on-state.mjs";
 import { DeferredAvatar } from "./DeferredAvatar";
+import { RealisticAvatar } from "./RealisticAvatar";
 import { MiniGarment } from "./muse-view-shared";
 import type { StudioViewProps } from "./muse-view-types";
 
@@ -35,6 +36,7 @@ export function StudioView({
 }: StudioViewProps) {
   const [closetCategory, setClosetCategory] = useState<(typeof STUDIO_CATEGORIES)[number]>("全部");
   const [outfitStatus, setOutfitStatus] = useState("");
+  const [previewMode, setPreviewMode] = useState<"realistic" | "3d">("realistic");
   const previewableWardrobe = wardrobe.filter((item) => supportsAvatarTryOn(item.category));
   const visible = previewableWardrobe.filter((item) => closetCategory === "全部" || item.category === closetCategory);
   const selected = wardrobe.filter((item) =>
@@ -99,11 +101,23 @@ export function StudioView({
           }) : <div className="studio-list-empty"><span aria-hidden="true">◇</span><strong>这里还没有可试穿衣物</strong><p>上装、下装、连衣裙和外套会出现在这里。</p></div>}</div>
         </aside>
         <div className="studio-avatar-wrap">
+          <div className="studio-avatar-toolbar">
+            <div className="studio-status"><span><i className="status-dot" /> {previewMode === "realistic" ? "真人风格模特预览" : "可调三维量体预览"}</span><b>{previewMode === "realistic" ? "颜色与大致款式参考" : `量体参考 · ${metrics.height} cm · ${metrics.weight} kg`}</b></div>
+            <div className="studio-preview-tabs" role="group" aria-label="分身预览模式">
+              <button type="button" aria-pressed={previewMode === "realistic"} className={previewMode === "realistic" ? "is-active" : ""} onClick={() => setPreviewMode("realistic")}>真人风格</button>
+              <button type="button" aria-pressed={previewMode === "3d"} className={previewMode === "3d" ? "is-active" : ""} onClick={() => setPreviewMode("3d")}>可旋转 3D</button>
+            </div>
+          </div>
           <div className="studio-avatar-viewport">
-            <div className="studio-status"><span><i className="status-dot" /> 更自然的人体比例预览</span><b>视觉参考 · {metrics.height} cm · {metrics.weight} kg</b></div>
-            <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
-            <p className="studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮</p>
-            <p className="studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放</p>
+            {previewMode === "realistic" ? (
+              <RealisticAvatar metrics={metrics} outfit={avatarOutfit} priority />
+            ) : (
+              <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
+            )}
+            {previewMode === "3d" ? <>
+              <p className="studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮</p>
+              <p className="studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放</p>
+            </> : null}
           </div>
           <section className="wearing-dock" aria-labelledby="wearing-dock-title">
             <div>

@@ -84,7 +84,8 @@ const CAMERA_DIRECTIONS: Record<CameraView, [number, number, number]> = {
   side: [1, 0.025, 0],
   back: [0, 0.025, -1],
 };
-const CAMERA_SAFE_FRAME = { top: 0.2, right: 0.075, bottom: 0.065, left: 0.075 };
+const CAMERA_SAFE_FRAME = { top: 0.13, right: 0.055, bottom: 0.05, left: 0.055 };
+const AVATAR_AUTO_ROTATE_BY_DEFAULT = false;
 // OrbitControls expects a factor below 1 for both public dolly methods.
 const AVATAR_ZOOM_SCALE = 1 / 1.15;
 const AVATAR_ZOOM_ANNOUNCE_DELAY_MS = 200;
@@ -1045,7 +1046,7 @@ export function Avatar3D({
   const viewSwitcherRef = useRef<HTMLDivElement>(null);
   const focusAfterRetryRef = useRef(false);
   const focusOnReadyRef = useRef(focusOnReady);
-  const [cameraView, setCameraView] = useState<CameraView>("angle");
+  const [cameraView, setCameraView] = useState<CameraView>("front");
   const [zoomLevel, setZoomLevel] = useState(100);
   const [zoomLimits, setZoomLimits] = useState({ minimum: 61, maximum: 147 });
   const zoomLevelRef = useRef(100);
@@ -1054,7 +1055,7 @@ export function Avatar3D({
     "initializing",
   );
   const [retryVersion, setRetryVersion] = useState(0);
-  const cameraViewRef = useRef<CameraView>("angle");
+  const cameraViewRef = useRef<CameraView>("front");
   const sceneInput = useDebouncedAvatarInput(metrics, outfit, 180);
   const sceneInputRef = useRef(sceneInput);
   const compactRef = useRef(compact);
@@ -1195,7 +1196,7 @@ export function Avatar3D({
     controls.enablePan = false;
     controls.enableDamping = !reduceMotion && !lowPowerDevice;
     controls.dampingFactor = 0.06;
-    controls.autoRotate = !reduceMotion && !lowPowerDevice;
+    controls.autoRotate = AVATAR_AUTO_ROTATE_BY_DEFAULT && !reduceMotion && !lowPowerDevice;
     controls.autoRotateSpeed = 1;
     controlsRef.current = controls;
 
@@ -1215,7 +1216,7 @@ export function Avatar3D({
         },
         verticalFovDegrees: camera.fov,
         aspect: camera.aspect,
-        safeFrame: { ...CAMERA_SAFE_FRAME, padding: 1.06 },
+        safeFrame: { ...CAMERA_SAFE_FRAME, padding: 1.02 },
       });
       fittedDistance = fit.fitDistance;
       if (runtime) runtime.fitDistance = fittedDistance;
@@ -1417,7 +1418,7 @@ export function Avatar3D({
     const handleMotionChange = () => {
       reduceMotion = motionQuery.matches;
       controls.enableDamping = !reduceMotion && !lowPowerDevice && !autoRotateSuppressed;
-      controls.autoRotate = !reduceMotion && !lowPowerDevice && !autoRotateSuppressed;
+      controls.autoRotate = AVATAR_AUTO_ROTATE_BY_DEFAULT && !reduceMotion && !lowPowerDevice && !autoRotateSuppressed;
       if (controls.autoRotate) {
         startAnimation();
         scheduleAutoRotateStop();

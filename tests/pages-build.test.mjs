@@ -10,6 +10,7 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   assert.match(html, /\/shoppingcart\/assets\/[^"']+\.js/);
   assert.match(html, /\/shoppingcart\/assets\/[^"']+\.css/);
   assert.match(html, /\/shoppingcart\/favicon-48\.png/);
+  assert.match(html, /\/shoppingcart\/og-real-v1\.jpg/);
   assert.doesNotMatch(html, /modulepreload[^>]+Avatar3D/i);
   assert.doesNotMatch(html, /modulepreload[^>]+AddGarmentDialog/i);
   assert.doesNotMatch(html, /modulepreload[^>]+garment-analysis/i);
@@ -96,8 +97,13 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     "on-demand wardrobe photo preparation exceeded 2 KiB gzip",
   );
   for (const [view, asset] of Object.entries(lazyViewAssets)) {
+    // The studio's optional 3D import is budgeted independently above; this
+    // loop keeps the view shell itself small enough to open immediately.
+    const viewBytes = view === "studio"
+      ? await gzipBytes(asset)
+      : await lazyPayloadBytes(asset);
     assert.ok(
-      await lazyPayloadBytes(asset) <= 5 * 1024,
+      viewBytes <= 5 * 1024,
       `${view} view exceeded 5 KiB gzip`,
     );
   }
@@ -156,5 +162,11 @@ test("GitHub Pages build keeps its project base path and core product", async ()
 
   const favicon = new URL("../pages-dist/favicon-48.png", import.meta.url);
   assert.ok((await stat(favicon)).size <= 8 * 1024, "favicon exceeded 8 KiB");
+  const socialCard = new URL("../pages-dist/og-real-v1.jpg", import.meta.url);
+  assert.ok((await stat(socialCard)).size <= 180 * 1024, "social card exceeded 180 KiB");
+  for (const name of ["real-model-base-v1.jpg", "real-model-dress-v1.jpg"]) {
+    const model = new URL(`../pages-dist/avatar/${name}`, import.meta.url);
+    assert.ok((await stat(model)).size <= 220 * 1024, `${name} exceeded 220 KiB`);
+  }
   await access(new URL("../pages-dist/.nojekyll", import.meta.url));
 });

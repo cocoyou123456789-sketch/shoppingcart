@@ -29,13 +29,13 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       url: base,
       locale: "zh_CN",
-      images: [{ url: new URL("/og.jpg", base), width: 1200, height: 630, alt: "松松逛虚拟购物与数字衣橱" }],
+      images: [{ url: new URL("/og-real-v1.jpg", base), width: 1200, height: 630, alt: "松松逛真人风格虚拟试穿与数字衣橱" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "松松逛｜喜欢就先在这里拥有",
       description: "0 元虚拟购物、可调三维分身、数字衣橱与每日搭配。",
-      images: [new URL("/og.jpg", base)],
+      images: [new URL("/og-real-v1.jpg", base)],
     },
   };
 }

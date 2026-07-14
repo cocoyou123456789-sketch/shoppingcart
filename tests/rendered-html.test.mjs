@@ -43,7 +43,7 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, deferredViews, shopView, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
+  const [page, layout, app, deferredViews, shopView, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, realisticAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
@@ -58,6 +58,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     readFile(new URL("../app/components/Avatar3D.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/avatar-runtime.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/components/DeferredAvatar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/RealisticAvatar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/wardrobe/image/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/profile/route.ts", import.meta.url), "utf8"),
@@ -74,7 +75,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(page, /ownerBindingForOwner\(pageOwner\)/);
   assert.match(page, /expectedOwner=\{expectedOwner\}/);
   assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
-  assert.match(layout, /\/og\.jpg/);
+  assert.match(layout, /\/og-real-v1\.jpg/);
   assert.match(layout, /\/favicon-48\.png/);
   assert.match(app, /VIRTUAL SHOPPING/);
   assert.match(app, /<DeferredAddGarmentDialog/);
@@ -272,7 +273,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     app,
     /onApply=\{\(selection\) => \{\s*updateOutfit\(selection\);\s*navigate\("studio"\);/,
   );
-  assert.match(app, /<DeferredAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact \/>/);
+  assert.match(app, /<RealisticAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact priority \/>/);
   assert.match(studioView, /<DeferredAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} priority \/>/);
   assert.match(app, /pendingMutations\.map\(\(mutation\) => mutation\.promise\)/);
   assert.match(app, /CLOUD_MUTATION_TIMEOUT_MS/);
@@ -345,6 +346,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /"eye-white"/);
   assert.match(avatar, /"nose-bridge"/);
   assert.match(avatar, /renderer\.toneMapping = ACESFilmicToneMapping/);
+  assert.match(avatar, /useState<CameraView>\("front"\)/);
+  assert.match(avatar, /const AVATAR_AUTO_ROTATE_BY_DEFAULT = false/);
+  assert.match(avatar, /CAMERA_SAFE_FRAME = \{ top: 0\.13/);
   assert.match(avatar, /avatarCameraFit\(\{/);
   assert.match(avatar, /runtime\.fitView\(cameraViewRef\.current, true\)/);
   assert.match(avatar, /ring\.xRadius \+ xClearance/);
@@ -357,8 +361,20 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(studioView, /aria-labelledby="studio-body-title"/);
   assert.match(studioView, /id="studio-closet-title"/);
   assert.match(studioView, /id="studio-body-title"/);
-  assert.match(studioView, /更自然的人体比例预览/);
-  assert.match(studioView, /视觉参考 · \{metrics\.height\} cm · \{metrics\.weight\} kg/);
+  assert.match(app, /<RealisticAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact priority/);
+  assert.match(studioView, /useState<"realistic" \| "3d">\("realistic"\)/);
+  assert.match(studioView, /真人风格模特预览/);
+  assert.match(studioView, /真人风格/);
+  assert.match(studioView, /可旋转 3D/);
+  assert.match(studioView, /量体参考 · \$\{metrics\.height\} cm · \$\{metrics\.weight\} kg/);
+  assert.match(realisticAvatar, /real-model-base-v1\.jpg/);
+  assert.match(realisticAvatar, /real-model-dress-v1\.jpg/);
+  assert.match(realisticAvatar, /摄影风格参考 · 照片不随身材参数变化/);
+  assert.match(realisticAvatar, /nextImage\.onload/);
+  assert.match(realisticAvatar, /--photo-garment-blend/);
+  assert.match(realisticAvatar, /setFailedSource\(desiredSource\)/);
+  assert.doesNotMatch(realisticAvatar, /scaleX\(/);
+  assert.match(realisticAvatar, /role="img"/);
   assert.match(
     studioView,
     /studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮/,
@@ -369,8 +385,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   );
   assert.match(
     studioView,
-    /studio-input-hint--touch">[^<]+<\/p>\s*<\/div>\s*<section className="wearing-dock"/,
-    "the outfit dock must be a document-flow sibling of the 3D viewport",
+    /\{previewMode === "3d"[\s\S]*?: null\}\s*<\/div>\s*<section className="wearing-dock"/,
+    "the outfit dock must be a document-flow sibling of the avatar viewport",
   );
   assert.ok(
     studioView.indexOf('<div className="studio-avatar-viewport">') <
