@@ -303,7 +303,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     app,
     /onApply=\{\(selection\) => \{\s*updateOutfit\(selection\);\s*navigate\("studio"\);/,
   );
-  assert.match(app, /<RealisticAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact priority \/>/);
+  assert.match(app, /import\("\.\/DeferredAvatar"\)/);
+  assert.match(app, /<DeferredHomeAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact priority \/>/);
   assert.match(studioView, /<DeferredAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} priority \/>/);
   assert.match(app, /pendingMutations\.map\(\(mutation\) => mutation\.promise\)/);
   assert.match(app, /CLOUD_MUTATION_TIMEOUT_MS/);
@@ -391,12 +392,18 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(studioView, /aria-labelledby="studio-body-title"/);
   assert.match(studioView, /id="studio-closet-title"/);
   assert.match(studioView, /id="studio-body-title"/);
-  assert.match(app, /<RealisticAvatar metrics=\{metrics\} outfit=\{avatarOutfit\} compact priority/);
-  assert.match(studioView, /useState<"realistic" \| "3d">\("realistic"\)/);
-  assert.match(studioView, /真人风格模特预览/);
-  assert.match(studioView, /真人风格/);
-  assert.match(studioView, /可旋转 3D/);
-  assert.match(studioView, /量体参考 · \$\{metrics\.height\} cm · \$\{metrics\.weight\} kg/);
+  assert.match(app, /可调 3D 试穿/);
+  assert.match(studioView, /useState<"realistic" \| "3d">\("3d"\)/);
+  assert.match(studioView, /可调三维分身/);
+  assert.match(studioView, />可调 3D<\/button>/);
+  assert.match(studioView, />照片参考<\/button>/);
+  assert.match(studioView, /照片不会随身材参数变化/);
+  assert.match(studioView, /实时联动 · \$\{metrics\.height\} cm · \$\{metrics\.weight\} kg/);
+  assert.match(studioView, /function updateAvatarMetrics/);
+  assert.match(studioView, /setPreviewMode\("3d"\)/);
+  assert.match(studioView, /体重用于估算整体轮廓/);
+  assert.match(studioView, /onChange=\{\(event\) => edit\(event\.target\.value\)\}/);
+  assert.match(studioView, /parsed >= min && parsed <= max/);
   assert.match(realisticAvatar, /real-model-base-v1\.jpg/);
   assert.match(realisticAvatar, /real-model-dress-v1\.jpg/);
   assert.match(realisticAvatar, /摄影风格参考 · 照片不随身材参数变化/);

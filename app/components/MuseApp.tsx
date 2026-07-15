@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import type { AvatarOutfit, BodyMetrics } from "./Avatar3D";
 import { DeferredAddGarmentDialog } from "./DeferredAddGarmentDialog";
-import { RealisticAvatar } from "./RealisticAvatar";
 import {
   DeferredClosetView,
   DeferredDailyView,
@@ -88,6 +95,10 @@ import {
   type Product,
   type WardrobeItem,
 } from "../lib/muse-data";
+
+const DeferredHomeAvatar = lazy(() =>
+  import("./DeferredAvatar").then((module) => ({ default: module.DeferredAvatar })),
+);
 
 const LOCAL_SNAPSHOT_KEY = "songsong-closet:device-state:v1";
 const CLEAR_BOUNDARY_LOCK_NAME = "songsong-closet:clear-boundary:v2";
@@ -3825,10 +3836,12 @@ function HomeView({
         </div>
         <div className="hero-avatar-card">
           <div className="hero-card-top">
-            <div><span>今日试穿</span><strong>{todayLabel()}</strong></div>
+            <div><span>可调 3D 试穿</span><strong>{todayLabel()}</strong></div>
             <button type="button" onClick={() => onNavigate("studio")}>进入试穿间 ↗</button>
           </div>
-          <RealisticAvatar metrics={metrics} outfit={avatarOutfit} compact priority />
+          <Suspense fallback={<div className="avatar-stage avatar-stage--compact"><div className="avatar-loading" role="status"><span aria-hidden="true" /><p>正在准备三维分身…</p></div></div>}>
+            <DeferredHomeAvatar metrics={metrics} outfit={avatarOutfit} compact priority />
+          </Suspense>
           <div className="hero-look-note">
             <span className="look-swatches" aria-hidden="true"><i style={{ background: avatarOutfit.top?.color }} /><i style={{ background: avatarOutfit.bottom?.color }} /><i style={{ background: avatarOutfit.outerwear?.color }} /></span>
             <div><strong>{hasCurrentLook ? "舒服但不无聊的一套" : "分身正在等第一套衣服"}</strong><small>{hasCurrentLook ? "适合散步、上课和不赶时间的下午" : "从衣橱穿上一件，或先去轻松逛逛"}</small></div>

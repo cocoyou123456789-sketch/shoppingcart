@@ -134,5 +134,5 @@ export function avatarAriaDescription(metrics, outfit) {
   const outerwear = garmentLabel(outfit?.outerwear, "外套");
   if (outerwear) garments.push(outerwear);
   const outfitLabel = garments.length ? garments.join("、") : "尚未选择衣物";
-  return `三维数字分身预览：身高 ${metrics.height} 厘米，${bodyShapeNames[metrics.bodyShape] ?? "自定义体型"}，${outfitLabel}。可使用下方按钮查看正面、侧面和背面，并放大或缩小。`;
+  return `三维数字分身预览：身高 ${metrics.height} 厘米，体重 ${metrics.weight} 公斤，${bodyShapeNames[metrics.bodyShape] ?? "自定义体型"}，${outfitLabel}。可使用下方按钮查看正面、侧面和背面，并放大或缩小。`;
 }

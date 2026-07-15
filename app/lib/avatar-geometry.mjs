@@ -41,7 +41,7 @@ function bodyShapeCue(value) {
  *
  * Coordinates start at the sole of the foot (y = 0). Width values and torso
  * radii are half extents, not full diameters. Explicit circumferences remain
- * authoritative; weight contributes only a bounded soft-tissue adjustment.
+ * authoritative; weight contributes a bounded whole-silhouette estimate.
  *
  * @param {object} metrics
  * @returns {{
@@ -71,12 +71,13 @@ export function avatarBodyProfile(metrics = {}) {
   const totalHeight = NOMINAL_HEIGHT * heightScale;
   const statureMetres = height / 100;
   const bmi = weight / (statureMetres * statureMetres);
-  const softTissue = clamp(1 + (bmi - 22) * 0.006, 0.9, 1.16);
-  const limbMass = clamp(1 + (bmi - 22) * 0.012, 0.82, 1.28);
+  const massRatio = clamp(bmi / 22, 0.35, 3);
+  const softTissue = clamp(massRatio ** 0.28, 0.86, 1.18);
+  const limbMass = clamp(massRatio ** 0.38, 0.8, 1.24);
 
   const widths = {
     shoulder: clamp(
-      0.84 * (shoulderMeasurement / 40) * (0.96 + softTissue * 0.04) * bodyShape.shoulder,
+      0.84 * (shoulderMeasurement / 40) * (0.9 + softTissue * 0.1) * bodyShape.shoulder,
       0.62,
       1.32,
     ),

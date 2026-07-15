@@ -2857,6 +2857,22 @@ input[type="range"] {
   font-weight: 500;
 }
 
+.weight-response-note {
+  background: #eee8df;
+  border-radius: 11px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  margin: -5px 0 13px;
+  padding: 9px 10px;
+}
+
+.weight-response-note span {
+  color: var(--coral-dark);
+  font-weight: 800;
+  margin-right: 4px;
+}
+
 .slider-list {
   border-bottom: 1px solid var(--line);
   border-top: 1px solid var(--line);

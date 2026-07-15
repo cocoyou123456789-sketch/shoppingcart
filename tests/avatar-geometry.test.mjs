@@ -101,6 +101,18 @@ test("height and each width measurement have monotonic, bounded influence", () =
   assert.ok(heavy.widths.chest > light.widths.chest);
   assert.ok(heavy.widths.waist > light.widths.waist);
   assert.ok(heavy.widths.hips > light.widths.hips);
+
+  const currentWeight = avatarBodyProfile({ ...DEFAULT_METRICS, weight: 58 });
+  const tenKgLighter = avatarBodyProfile({ ...DEFAULT_METRICS, weight: 48 });
+  for (const region of ["chest", "waist", "hips"]) {
+    const reduction = 1 - tenKgLighter.widths[region] / currentWeight.widths[region];
+    assert.ok(reduction >= 0.05, `${region} must visibly respond to a 10 kg change`);
+    assert.ok(reduction <= 0.1, `${region} weight response must stay bounded`);
+  }
+  const limbReduction = 1 - tenKgLighter.widths.limb / currentWeight.widths.limb;
+  assert.ok(limbReduction >= 0.065 && limbReduction <= 0.12);
+  assert.equal(tenKgLighter.totalHeight, currentWeight.totalHeight);
+  assert.equal(tenKgLighter.joints.headTop, currentWeight.joints.headTop);
 });
 
 test("five female body-shape cues stay subtle and preserve the expected relative silhouette", () => {
@@ -147,16 +159,16 @@ test("five female body-shape cues stay subtle and preserve the expected relative
   }
 });
 
-test("explicit measurements dominate even the opposing body-shape cue", () => {
+test("explicit measurements dominate even opposing weight and body-shape cues", () => {
   const cases = [
-    ["shoulder", "shoulder", 32, "inverted", 52, "pear"],
-    ["chest", "chest", 72, "inverted", 126, "pear"],
-    ["waist", "waist", 56, "apple", 118, "hourglass"],
-    ["hips", "hips", 76, "pear", 132, "inverted"],
+    ["shoulder", "shoulder", 32, "inverted", 120, 52, "pear", 38],
+    ["chest", "chest", 72, "inverted", 120, 126, "pear", 38],
+    ["waist", "waist", 56, "apple", 120, 118, "hourglass", 38],
+    ["hips", "hips", 76, "pear", 120, 132, "inverted", 38],
   ];
-  for (const [metric, width, low, lowShape, high, highShape] of cases) {
-    const narrow = avatarBodyProfile({ ...DEFAULT_METRICS, [metric]: low, bodyShape: lowShape });
-    const wide = avatarBodyProfile({ ...DEFAULT_METRICS, [metric]: high, bodyShape: highShape });
+  for (const [metric, width, low, lowShape, lowWeight, high, highShape, highWeight] of cases) {
+    const narrow = avatarBodyProfile({ ...DEFAULT_METRICS, [metric]: low, bodyShape: lowShape, weight: lowWeight });
+    const wide = avatarBodyProfile({ ...DEFAULT_METRICS, [metric]: high, bodyShape: highShape, weight: highWeight });
     assert.ok(wide.widths[width] > narrow.widths[width], `${metric} must outrank its shape cue`);
   }
 
