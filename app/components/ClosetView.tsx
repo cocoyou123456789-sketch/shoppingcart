@@ -2,10 +2,21 @@
 "use client";
 
 import { useState } from "react";
-import { CLOSET_CATEGORIES } from "../lib/garment-form-options";
+import {
+  CLOSET_CATEGORIES,
+  isValidGarmentSourceUrl,
+} from "../lib/garment-form-options";
 import { supportsAvatarTryOn } from "../lib/try-on-state.mjs";
 import { MiniGarment } from "./muse-view-shared";
 import type { ClosetViewProps } from "./muse-view-types";
+
+function sourceHostLabel(sourceUrl: string) {
+  try {
+    return new URL(sourceUrl).hostname.replace(/^www\./, "");
+  } catch {
+    return "商家页面";
+  }
+}
 
 export function ClosetView({
   wardrobe,
@@ -70,7 +81,7 @@ export function ClosetView({
         {visible.map((item) => (
           <article className="wardrobe-card" key={item.id}>
             <div className="wardrobe-visual"><span className={`source-pill ${item.source === "虚拟商品" ? "source-pill--virtual" : item.source === "示例衣物" ? "source-pill--sample" : ""}`}>{item.source}</span>{item.imageUrl ? <img src={item.imageUrl} alt={item.name} loading="lazy" decoding="async" /> : <MiniGarment item={item} />}</div>
-            <div className="wardrobe-info"><div><span>{item.category} · {item.size}</span><i style={{ background: item.color }} /></div><h2>{item.name}</h2><p>{item.season} · {item.style}</p><div className="confidence-line"><span>资料可信度</span><b className={`confidence confidence--${item.confidence === "高" ? "high" : item.confidence === "中" ? "mid" : "low"}`}>{item.confidence}</b></div><div className="wardrobe-actions"><button type="button" className="button button--dark" onClick={() => onWear(item)} disabled={!supportsAvatarTryOn(item.category)}>{supportsAvatarTryOn(item.category) ? "穿上看看" : "暂不支持 3D"}</button><button type="button" className="remove-garment" onClick={(event) => void deleteAndRestoreFocus(item, event)} aria-label={`从衣橱移除${item.name}`}>移除</button></div></div>
+            <div className="wardrobe-info"><div><span>{item.category} · {item.size}</span><i style={{ background: item.color }} /></div><h2>{item.name}</h2><p>{item.season} · {item.style}</p>{item.sourceUrl && isValidGarmentSourceUrl(item.sourceUrl) && <a className="wardrobe-source-link" href={item.sourceUrl} target="_blank" rel="noopener noreferrer external nofollow ugc" referrerPolicy="no-referrer" aria-label={`返回 ${item.name} 的商家页面，将在新标签页打开`}>查看 {sourceHostLabel(item.sourceUrl)} <span aria-hidden="true">↗</span></a>}<div className="confidence-line"><span>资料可信度</span><b className={`confidence confidence--${item.confidence === "高" ? "high" : item.confidence === "中" ? "mid" : "low"}`}>{item.confidence}</b></div><div className="wardrobe-actions"><button type="button" className="button button--dark" onClick={() => onWear(item)} disabled={!supportsAvatarTryOn(item.category)}>{supportsAvatarTryOn(item.category) ? "穿上看看" : "暂不支持 3D"}</button><button type="button" className="remove-garment" onClick={(event) => void deleteAndRestoreFocus(item, event)} aria-label={`从衣橱移除${item.name}`}>移除</button></div></div>
           </article>
         ))}
       </section>

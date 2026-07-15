@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 
 test("GitHub Pages build keeps its project base path and core product", async () => {
   const html = await readFile(new URL("../pages-dist/index.html", import.meta.url), "utf8");
-  assert.match(html, /<title>松松逛｜虚拟购物与数字衣橱<\/title>/);
+  assert.match(html, /<title>松松逛｜真实好物、虚拟购物与数字衣橱<\/title>/);
   assert.match(html, /data-storage-mode="device"/);
   assert.match(html, /\/shoppingcart\/assets\/[^"']+\.js/);
   assert.match(html, /\/shoppingcart\/assets\/[^"']+\.css/);
@@ -26,6 +26,8 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   const addGarmentAsset = assets.find((name) => /^AddGarmentDialog-.+\.js$/.test(name));
   const garmentAnalysisAsset = assets.find((name) => /^garment-analysis-.+\.js$/.test(name));
   const wardrobePhotoAsset = assets.find((name) => /^wardrobe-photo-.+\.js$/.test(name));
+  const realShopAsset = assets.find((name) => /^RealShopView-.+\.js$/.test(name));
+  const virtualShopAsset = assets.find((name) => /^VirtualShopView-.+\.js$/.test(name));
   const lazyViewAssets = {
     shop: assets.find((name) => /^ShopView-.+\.js$/.test(name)),
     closet: assets.find((name) => /^ClosetView-.+\.js$/.test(name)),
@@ -36,6 +38,8 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   assert.ok(addGarmentAsset);
   assert.ok(garmentAnalysisAsset);
   assert.ok(wardrobePhotoAsset);
+  assert.ok(realShopAsset);
+  assert.ok(virtualShopAsset);
   for (const [view, asset] of Object.entries(lazyViewAssets)) {
     assert.ok(asset, `${view} view must have its own on-demand chunk`);
   }
@@ -99,7 +103,7 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   for (const [view, asset] of Object.entries(lazyViewAssets)) {
     // The studio's optional 3D import is budgeted independently above; this
     // loop keeps the view shell itself small enough to open immediately.
-    const viewBytes = view === "studio"
+    const viewBytes = view === "studio" || view === "shop"
       ? await gzipBytes(asset)
       : await lazyPayloadBytes(asset);
     assert.ok(
@@ -107,6 +111,14 @@ test("GitHub Pages build keeps its project base path and core product", async ()
       `${view} view exceeded 5 KiB gzip`,
     );
   }
+  assert.ok(
+    await lazyPayloadBytes(realShopAsset) <= 6 * 1024,
+    "real shop directory exceeded 6 KiB gzip",
+  );
+  assert.ok(
+    await lazyPayloadBytes(virtualShopAsset) <= 5 * 1024,
+    "virtual shop directory exceeded 5 KiB gzip",
+  );
 
   const entrySource = await readFile(
     new URL(`../pages-dist/assets/${entryAsset}`, import.meta.url),
@@ -114,6 +126,14 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   );
   const addGarmentSource = await readFile(
     new URL(`../pages-dist/assets/${addGarmentAsset}`, import.meta.url),
+    "utf8",
+  );
+  const shopSource = await readFile(
+    new URL(`../pages-dist/assets/${lazyViewAssets.shop}`, import.meta.url),
+    "utf8",
+  );
+  const realShopSource = await readFile(
+    new URL(`../pages-dist/assets/${realShopAsset}`, import.meta.url),
     "utf8",
   );
   const escapedAddGarmentAsset = addGarmentAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -148,9 +168,17 @@ test("GitHub Pages build keeps its project base path and core product", async ()
     const escapedAsset = asset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     assert.match(entrySource, new RegExp(escapedAsset), `entry must reference lazy ${view} view`);
   }
+  for (const nestedAsset of [realShopAsset, virtualShopAsset]) {
+    const escapedAsset = nestedAsset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(shopSource, new RegExp(escapedAsset), "shop shell must reference its nested mode chunk");
+  }
+  assert.match(realShopSource, /淘宝/);
+  assert.match(realShopSource, /SNIDEL/);
+  assert.match(realShopSource, /noopener noreferrer external/);
+  assert.doesNotMatch(realShopSource, /(?:price|stock|inventory|discount)\s*:/i);
   assert.doesNotMatch(
     entrySource,
-    /VIRTUAL SHOPPING · 0 元体验|MY DIGITAL WARDROBE|3D FITTING STUDIO|TODAY(?:&apos;|')S OUTFIT/,
+    /REAL SHOPS ·|VIRTUAL SHOPPING · 0 元体验|MY DIGITAL WARDROBE|3D FITTING STUDIO|TODAY(?:&apos;|')S OUTFIT/,
     "entry must not contain non-home view implementation copy",
   );
   assert.match(addGarmentSource, /ADD TO WARDROBE/);

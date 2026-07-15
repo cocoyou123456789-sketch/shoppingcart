@@ -1460,6 +1460,272 @@ input[type="range"] {
   line-height: 1;
 }
 
+.page-hero--real {
+  background: linear-gradient(125deg, rgba(239, 218, 211, 0.72), rgba(231, 229, 238, 0.56));
+  border: 1px solid rgba(91, 75, 71, 0.09);
+  border-radius: 34px;
+  padding: 34px;
+}
+
+.real-shop-count {
+  align-items: center;
+  background: #fff9f3;
+  border: 1px solid rgba(91, 75, 71, 0.1);
+  border-radius: 50%;
+  box-shadow: 0 18px 38px rgba(78, 64, 60, 0.08);
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  height: 150px;
+  justify-content: center;
+  transform: rotate(3deg);
+  width: 150px;
+}
+
+.real-shop-count strong {
+  font-family: Georgia, serif;
+  font-size: 44px;
+  font-weight: 400;
+  line-height: 0.9;
+}
+
+.real-shop-count span,
+.real-shop-count small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.real-shop-count span {
+  font-weight: 800;
+  margin: 5px 0 2px;
+}
+
+.shop-mode-switch {
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 1fr 1fr;
+  margin: 0 0 28px;
+  max-width: 560px;
+  padding: 5px;
+}
+
+.shop-mode-switch button {
+  align-items: flex-start;
+  background: transparent;
+  border-radius: 17px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  min-height: 60px;
+  padding: 11px 18px;
+  text-align: left;
+}
+
+.shop-mode-switch button strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.shop-mode-switch button span {
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.shop-mode-switch button.is-active {
+  background: var(--ink);
+  box-shadow: 0 9px 22px rgba(52, 45, 44, 0.13);
+  color: #eee7e4;
+}
+
+.shop-mode-switch button.is-active strong {
+  color: #fff;
+}
+
+.shop-surface-loading {
+  align-items: center;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  min-height: 180px;
+}
+
+.shop-surface-loading span {
+  font-size: 26px;
+}
+
+.real-shop-intro,
+.real-shop-handoff {
+  align-items: center;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  display: flex;
+  gap: 28px;
+  justify-content: space-between;
+  margin-bottom: 22px;
+  padding: 25px 28px;
+}
+
+.real-shop-intro > div,
+.real-shop-handoff > div {
+  max-width: 760px;
+}
+
+.real-shop-intro h2,
+.real-shop-handoff h2 {
+  font-family: "Songti SC", Georgia, serif;
+  font-size: 25px;
+  font-weight: 600;
+  margin: 5px 0 7px;
+}
+
+.real-shop-intro > div > p:last-child,
+.real-shop-handoff p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.official-store-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.official-store-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 27px;
+  display: flex;
+  flex-direction: column;
+  min-height: 390px;
+  overflow: hidden;
+  padding: 14px;
+  transition: box-shadow 220ms ease, transform 220ms ease;
+}
+
+.official-store-card:hover {
+  box-shadow: 0 20px 48px rgba(73, 62, 57, 0.1);
+  transform: translateY(-3px);
+}
+
+.official-store-mark {
+  align-items: center;
+  background: var(--store-accent);
+  border-radius: 19px;
+  display: flex;
+  height: 116px;
+  justify-content: center;
+}
+
+.official-store-mark span {
+  align-items: center;
+  background: rgba(255, 253, 249, 0.76);
+  border: 1px solid rgba(75, 64, 61, 0.09);
+  border-radius: 50%;
+  display: flex;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 27px;
+  height: 58px;
+  justify-content: center;
+  width: 58px;
+}
+
+.official-store-copy {
+  flex: 1;
+  padding: 16px 4px 13px;
+}
+
+.official-store-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 9px;
+  gap: 7px;
+  justify-content: space-between;
+}
+
+.official-store-meta span {
+  background: var(--paper-deep);
+  border-radius: 999px;
+  color: #5b514f;
+  padding: 5px 8px;
+}
+
+.official-store-meta small {
+  font-size: 9px;
+}
+
+.official-store-copy h2 {
+  font-family: "Songti SC", Georgia, serif;
+  font-size: 24px;
+  font-weight: 600;
+  margin: 13px 0 7px;
+}
+
+.official-store-copy p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  min-height: 56px;
+}
+
+.official-store-copy code {
+  color: #5a504e;
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  margin-top: 10px;
+}
+
+.official-store-link {
+  width: 100%;
+}
+
+.official-store-note {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+  margin: 9px 4px 2px;
+  text-align: center;
+}
+
+.real-shop-handoff {
+  background: #e5e9e1;
+  margin: 28px 0 12px;
+}
+
+.real-shop-handoff > span {
+  align-items: center;
+  background: rgba(255, 253, 249, 0.72);
+  border-radius: 50%;
+  display: flex;
+  flex: 0 0 50px;
+  font-size: 22px;
+  height: 50px;
+  justify-content: center;
+}
+
+.real-shop-handoff > div {
+  flex: 1;
+}
+
+.store-relationship-note {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.7;
+  margin: 0 auto;
+  max-width: 860px;
+  text-align: center;
+}
+
 .shop-toolbar,
 .closet-toolbar {
   align-items: center;
@@ -1631,6 +1897,18 @@ input[type="range"] {
 .wardrobe-info > p {
   color: var(--muted);
   font-size: 11px;
+}
+
+.wardrobe-source-link {
+  color: var(--coral-dark);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 750;
+  gap: 4px;
+  margin-top: 9px;
+  text-decoration: underline;
+  text-decoration-color: rgba(139, 75, 64, 0.3);
+  text-underline-offset: 3px;
 }
 
 .product-bottom {
@@ -3585,6 +3863,7 @@ input[type="range"] {
   .mood-control { grid-template-columns: auto minmax(160px, 1fr) auto 40px; width: 100%; }
   .home-grid { grid-template-columns: 1fr; }
   .product-grid { grid-template-columns: repeat(2, 1fr); }
+  .official-store-grid { grid-template-columns: repeat(2, 1fr); }
   .wardrobe-grid { grid-template-columns: repeat(2, 1fr); }
   .studio-grid { grid-template-columns: 240px 1fr; }
   .studio-avatar-toolbar { align-items: stretch; flex-direction: column; }
@@ -3655,6 +3934,17 @@ input[type="range"] {
   .page-hero h1, .page-title-row h1, .studio-heading h1, .daily-hero h1 { font-size: 40px; }
   .imagination-balance { align-self: flex-end; height: 110px; width: 110px; }
   .imagination-balance strong { font-size: 36px; }
+  .page-hero--real { padding: 24px 20px; }
+  .real-shop-count { align-self: flex-end; height: 110px; width: 110px; }
+  .real-shop-count strong { font-size: 34px; }
+  .shop-mode-switch { max-width: none; width: 100%; }
+  .shop-mode-switch button { min-height: 64px; padding-inline: 14px; }
+  .real-shop-intro, .real-shop-handoff { align-items: stretch; flex-direction: column; gap: 16px; padding: 21px; }
+  .real-shop-intro .button, .real-shop-handoff .button { width: 100%; }
+  .real-shop-handoff > span { display: none; }
+  .official-store-grid { grid-template-columns: 1fr; }
+  .official-store-card { min-height: 0; }
+  .official-store-copy p { min-height: 0; }
   .shop-toolbar, .closet-toolbar { align-items: stretch; flex-direction: column; }
   .search-box { min-width: 0; width: 100%; }
   .chip-row { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 5px; }

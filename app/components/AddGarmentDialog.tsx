@@ -29,12 +29,14 @@ export type AddGarmentDialogProps = {
   onClose: () => void;
   onAdd: (item: WardrobeItem, photo?: File) => Promise<string | null> | string | null;
   returnFocusRef: RefObject<HTMLElement | null>;
+  initialMode?: "photo" | "link" | "manual";
 };
 
 export function AddGarmentDialog({
   onClose,
   onAdd,
   returnFocusRef,
+  initialMode = "photo",
 }: AddGarmentDialogProps) {
   const submittingRef = useRef(false);
   const closeWhenReady = () => {
@@ -45,7 +47,7 @@ export function AddGarmentDialog({
   const sourceUrlInputRef = useRef<HTMLInputElement>(null);
   const estimateTimer = useRef<number | null>(null);
   const estimateGeneration = useRef(0);
-  const [mode, setMode] = useState<"photo" | "link" | "manual">("photo");
+  const [mode, setMode] = useState<"photo" | "link" | "manual">(initialMode);
   const [photo, setPhoto] = useState<File | undefined>();
   const [preview, setPreview] = useState<string>();
   const [analyzed, setAnalyzed] = useState(false);

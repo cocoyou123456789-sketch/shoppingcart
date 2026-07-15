@@ -1,120 +1,56 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  createVirtualWardrobeItem,
-  supportsAvatarTryOn,
-} from "../lib/try-on-state.mjs";
-import { PRODUCTS, type ShopCategory } from "../lib/muse-data";
-import { ProductVisual } from "./muse-view-shared";
+import { lazy, Suspense, useState } from "react";
 import type { ShopViewProps } from "./muse-view-types";
 
-const SHOP_CATEGORIES: ("全部" | ShopCategory)[] = [
-  "全部",
-  "上装",
-  "下装",
-  "连衣裙",
-  "外套",
-  "鞋履",
-  "美妆",
-  "装饰",
-];
+const RealShopView = lazy(() =>
+  import("./RealShopView").then((module) => ({ default: module.RealShopView })),
+);
+const VirtualShopView = lazy(() =>
+  import("./VirtualShopView").then((module) => ({ default: module.VirtualShopView })),
+);
 
-export function ShopView({
-  saved,
-  onToggleSaved,
-  onAdd,
-  onTry,
-}: ShopViewProps) {
-  const [category, setCategory] = useState<(typeof SHOP_CATEGORIES)[number]>("全部");
-  const [query, setQuery] = useState("");
-  const [savedOnly, setSavedOnly] = useState(false);
-  const savedFilterRef = useRef<HTMLButtonElement>(null);
-  const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
-  const visible = PRODUCTS.filter(
-    (product) =>
-      (category === "全部" || product.category === category) &&
-      (!normalizedQuery ||
-        product.name.toLocaleLowerCase("zh-CN").includes(normalizedQuery) ||
-        product.colorName.toLocaleLowerCase("zh-CN").includes(normalizedQuery)) &&
-      (!savedOnly || saved.includes(product.id)),
-  );
-  const [resultAnnouncement, setResultAnnouncement] = useState("");
+type ShopMode = "real" | "virtual";
 
-  function toggleSavedAndRestoreFocus(
-    productId: string,
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) {
-    const button = event.currentTarget;
-    const grid = button.closest<HTMLElement>(".product-grid");
-    const buttonsBefore = grid
-      ? Array.from(grid.querySelectorAll<HTMLButtonElement>(".save-button"))
-      : [];
-    const focusIndex = Math.max(0, buttonsBefore.indexOf(button));
-    const willDisappear = savedOnly && saved.includes(productId);
-    onToggleSaved(productId);
-    if (!willDisappear) return;
-    window.requestAnimationFrame(() => {
-      const buttonsAfter = grid?.isConnected
-        ? Array.from(grid.querySelectorAll<HTMLButtonElement>(".save-button"))
-        : [];
-      const target = buttonsAfter[Math.min(focusIndex, buttonsAfter.length - 1)];
-      (target ?? savedFilterRef.current)?.focus();
-    });
+export function ShopView({ onImportLink, ...virtualProps }: ShopViewProps) {
+  const [mode, setMode] = useState<ShopMode>("real");
+  const [modeAnnouncement, setModeAnnouncement] = useState("");
+
+  function selectMode(nextMode: ShopMode) {
+    if (nextMode === mode) return;
+    setMode(nextMode);
+    setModeAnnouncement(
+      nextMode === "real"
+        ? "已切换到真实好物，共 7 个商家入口"
+        : "已切换到 0 元虚拟逛，不会产生付款或真实订单",
+    );
   }
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const scope = savedOnly ? "收藏中" : category === "全部" ? "全部分类中" : `${category}分类中`;
-      const search = normalizedQuery ? `搜索“${query.trim()}”时，` : "";
-      setResultAnnouncement(`${search}${scope}找到 ${visible.length} 件虚拟商品`);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [category, normalizedQuery, query, savedOnly, visible.length]);
-
+  const isReal = mode === "real";
   return (
     <div className="page page--shop">
-      <section className="page-hero page-hero--shop">
-        <div><p className="eyebrow">VIRTUAL SHOPPING · 0 元体验</p><h1>慢慢逛，喜欢就收下。</h1><p>所有商品都是虚拟的。没有库存提醒，没有倒计时，也没有任何真实支付。</p></div>
-        <div className="imagination-balance"><span>今日想象力余额</span><strong>∞</strong><small>怎么逛都不会变少</small></div>
-      </section>
-      <section className="shop-toolbar">
-        <div className="search-box"><span aria-hidden="true">⌕</span><input type="search" aria-label="搜索虚拟商品" placeholder="搜一件让你开心的东西" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-        <div className="chip-row" role="group" aria-label="商品筛选">
-          {SHOP_CATEGORIES.map((item) => <button type="button" key={item} aria-pressed={category === item} className={category === item ? "is-active" : ""} onClick={() => setCategory(item)}>{item}</button>)}
-          <button ref={savedFilterRef} type="button" aria-pressed={savedOnly} className={savedOnly ? "is-active" : ""} onClick={() => setSavedOnly((current) => !current)}>♡ 收藏 {saved.length}</button>
+      <section className={`page-hero page-hero--shop ${isReal ? "page-hero--real" : ""}`}>
+        <div>
+          <p className="eyebrow">{isReal ? "REAL SHOPS · 官方与平台入口" : "VIRTUAL SHOPPING · 0 元体验"}</p>
+          <h1>{isReal ? "真实好物，先看看再决定。" : "慢慢逛，喜欢就收下。"}</h1>
+          <p>{isReal ? "去真实商家完成购买；也可以把商品链接带回数字衣橱，先做搭配和试穿参考。" : "所有商品都是虚拟的。没有库存提醒，没有倒计时，也没有任何真实支付。"}</p>
         </div>
+        {isReal ? (
+          <div className="real-shop-count" aria-label="七个已核验购物入口"><strong>7</strong><span>个入口</span><small>域名已核对</small></div>
+        ) : (
+          <div className="imagination-balance"><span>今日想象力余额</span><strong>∞</strong><small>怎么逛都不会变少</small></div>
+        )}
       </section>
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {resultAnnouncement}
-      </p>
-      <section className="product-grid">
-        {visible.map((product) => {
-          const wardrobeCandidate = createVirtualWardrobeItem(product);
-          return <article className="product-card" key={product.id}>
-            <div className="product-image-wrap">
-              <span className="virtual-pill">虚拟商品</span>
-              <button type="button" className={`save-button ${saved.includes(product.id) ? "is-saved" : ""}`} onClick={(event) => toggleSavedAndRestoreFocus(product.id, event)} aria-label={saved.includes(product.id) ? `取消收藏${product.name}` : `收藏${product.name}`} aria-pressed={saved.includes(product.id)}>♡</button>
-              <ProductVisual visual={product.visual} color={product.color} />
-            </div>
-            <div className="product-info">
-              <p className="product-meta"><span>{product.category}</span><i style={{ background: product.color }} /> {product.colorName}</p>
-              <h2>{product.name}</h2><p>{product.subtitle}</p>
-              <div className="product-bottom"><strong><small>虚拟价</small> {product.points} 松松币</strong><span>不会扣款</span></div>
-              <div className={`product-actions ${wardrobeCandidate ? "" : "product-actions--single"}`}>
-                {wardrobeCandidate && (
-                  <button type="button" className="button button--soft" onClick={() => onTry(product)}>
-                    {supportsAvatarTryOn(product.category) ? "试穿看看" : "收入衣橱"}
-                  </button>
-                )}
-                <button type="button" className="button button--dark" onClick={() => onAdd(product)}>放进袋子</button>
-              </div>
-            </div>
-          </article>;
-        })}
-      </section>
-      {!visible.length && <div className="empty-state"><span>⌁</span><h2>{savedOnly ? "还没有收藏的虚拟商品" : "这里暂时是空的"}</h2><p>{savedOnly ? "遇到喜欢的就点一下爱心，之后还会在这里。" : "换个关键词，或者回到“全部”慢慢看看。"}</p></div>}
-      <div className="no-pressure-note"><span aria-hidden="true">☁</span><div><strong>这里不制造“错过焦虑”</strong><p>没有限时、库存紧张和消费排名。你可以收藏、离开，任何时候再回来。</p></div></div>
+
+      <div className="shop-mode-switch" role="group" aria-label="购物模式">
+        <button type="button" className={isReal ? "is-active" : ""} aria-pressed={isReal} onClick={() => selectMode("real")}><strong>真实好物</strong><span>去商家购买</span></button>
+        <button type="button" className={!isReal ? "is-active" : ""} aria-pressed={!isReal} onClick={() => selectMode("virtual")}><strong>0 元虚拟逛</strong><span>只体验，不扣款</span></button>
+      </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{modeAnnouncement}</p>
+
+      <Suspense fallback={<section className="shop-surface-loading" role="status" aria-live="polite" aria-busy="true"><span aria-hidden="true">◌</span><p>正在准备{isReal ? "真实店铺入口" : "0 元虚拟商品"}…</p></section>}>
+        {isReal ? <RealShopView onImportLink={onImportLink} /> : <VirtualShopView {...virtualProps} />}
+      </Suspense>
     </div>
   );
 }

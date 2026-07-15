@@ -22,6 +22,7 @@ export type ShopViewProps = {
   onToggleSaved: (productId: string) => void;
   onAdd: (product: Product) => void;
   onTry: (product: Product) => void;
+  onImportLink: (opener: HTMLButtonElement) => void;
 };
 
 export type ClosetViewProps = {

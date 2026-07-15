@@ -556,6 +556,7 @@ export function MuseApp({
   const [savedProductIds, setSavedProductIds] = useState<string[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [addInitialMode, setAddInitialMode] = useState<"photo" | "link" | "manual">("photo");
   const [celebrationOpen, setCelebrationOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [mood, setMood] = useState(62);
@@ -3633,13 +3634,22 @@ export function MuseApp({
             onToggleSaved={toggleSavedProduct}
             onAdd={addToCart}
             onTry={tryProduct}
+            onImportLink={(opener) => {
+              dialogOpenerRef.current = opener;
+              setAddInitialMode("link");
+              setAddOpen(true);
+            }}
             onReady={focusCurrentViewHeading}
           />
         )}
         {view === "closet" && (
           <DeferredClosetView
             wardrobe={wardrobe}
-            onAdd={(opener) => { dialogOpenerRef.current = opener; setAddOpen(true); }}
+            onAdd={(opener) => {
+              dialogOpenerRef.current = opener;
+              setAddInitialMode("photo");
+              setAddOpen(true);
+            }}
             onDelete={deleteWardrobeItem}
             onClearData={clearPersonalData}
             clearingData={clearingData}
@@ -3712,7 +3722,7 @@ export function MuseApp({
           returnFocusRef={dialogOpenerRef}
         />
       )}
-      {addOpen && <DeferredAddGarmentDialog onClose={() => setAddOpen(false)} onAdd={addWardrobeItem} returnFocusRef={dialogOpenerRef} />}
+      {addOpen && <DeferredAddGarmentDialog initialMode={addInitialMode} onClose={() => setAddOpen(false)} onAdd={addWardrobeItem} returnFocusRef={dialogOpenerRef} />}
       {celebrationOpen && (
         <CelebrationDialog
           onClose={() => setCelebrationOpen(false)}
@@ -3799,17 +3809,17 @@ function HomeView({
       <section className="hero-section">
         <div className="hero-copy">
           <p className="eyebrow"><span aria-hidden="true">✦</span> 今天不需要做正确选择</p>
-          <h1>想买就先在这里拥有，<br /><em>不用真的花钱。</em></h1>
+          <h1>喜欢的先试穿，<br /><em>想清楚再去官网。</em></h1>
           <p className="hero-lead">
-            像逛喜欢的商店一样慢慢挑，也可以把自己的衣服穿到数字分身上。这里没有付款、银行卡和真实订单。
+            可以进入真实品牌与平台慢慢挑，也可以回到 0 元虚拟逛。购买在商家网站完成，松松逛不收集银行卡。
           </p>
           <div className="hero-actions">
             <button type="button" className="button button--primary" onClick={() => onNavigate("shop")}>开始慢慢逛 <span aria-hidden="true">→</span></button>
             <button type="button" className="button button--soft" onClick={() => onNavigate(canBuildOutfit ? "daily" : "closet")}>✦ {canBuildOutfit ? "生成今日搭配" : "先整理衣橱"}</button>
           </div>
           <div className="reassurance-row">
-            <span><i aria-hidden="true">✓</i> 永远 0 元</span>
-            <span><i aria-hidden="true">✓</i> 不收集银行卡</span>
+            <span><i aria-hidden="true">✓</i> 真实商家入口</span>
+            <span><i aria-hidden="true">✓</i> 0 元模式保留</span>
             <span><i aria-hidden="true">✓</i> 身体友好</span>
           </div>
         </div>
@@ -3861,7 +3871,7 @@ function HomeView({
         <div className="section-title"><div><p className="section-kicker">你的两个空间</p><h2>逛一会儿，也照顾好真实的自己</h2></div><p>不用先把一切准备完，从任何一步开始都可以。</p></div>
         <div className="path-grid">
           <button type="button" className="path-card path-card--shop" onClick={() => onNavigate("shop")}>
-            <span className="path-number">01</span><div><small>VIRTUAL SHOPPING</small><h3>松松逛</h3><p>服装、美妆和装饰都能放进袋子。结账只是一个快乐的结束动作，不会扣款。</p></div><span className="path-arrow">↗</span>
+            <span className="path-number">01</span><div><small>REAL + VIRTUAL SHOPPING</small><h3>真实好物，也能 0 元逛</h3><p>先去真实商家看看，或切回不扣款的虚拟模式；喜欢的链接可以带回衣橱慢慢搭配。</p></div><span className="path-arrow">↗</span>
           </button>
           <button type="button" className="path-card path-card--closet" onClick={() => onNavigate("studio")}>
             <span className="path-number">02</span><div><small>DIGITAL WARDROBE</small><h3>我的数字衣橱</h3><p>调整接近你的身形，录入自己的衣服，试出明天真正可以穿的一套。</p></div><span className="path-arrow">↗</span>

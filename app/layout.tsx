@@ -16,8 +16,8 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: base,
-    title: "松松逛｜虚拟购物与数字衣橱",
-    description: "不用真钱也能轻松逛；创建可调节的三维分身，录入自己的衣服，试穿并生成每日搭配。",
+    title: "松松逛｜真实好物、虚拟购物与数字衣橱",
+    description: "连接真实服装网站，也保留 0 元虚拟购物；把商品链接带回数字衣橱，试穿并生成每日搭配。",
     icons: {
       icon: "/favicon-48.png",
       shortcut: "/favicon-48.png",
@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     openGraph: {
       title: "松松逛｜喜欢就先在这里拥有",
-      description: "0 元虚拟购物、可调三维分身、数字衣橱与每日搭配。",
+      description: "真实服装网站入口、0 元虚拟购物、可调三维分身、数字衣橱与每日搭配。",
       type: "website",
       url: base,
       locale: "zh_CN",
@@ -34,7 +34,7 @@ export async function generateMetadata(): Promise<Metadata> {
     twitter: {
       card: "summary_large_image",
       title: "松松逛｜喜欢就先在这里拥有",
-      description: "0 元虚拟购物、可调三维分身、数字衣橱与每日搭配。",
+      description: "真实服装网站入口、0 元虚拟购物、可调三维分身、数字衣橱与每日搭配。",
       images: [new URL("/og-real-v1.jpg", base)],
     },
   };

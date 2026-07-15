@@ -29,9 +29,10 @@ test("server-renders the finished 松松逛 product", async () => {
 
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="zh-CN"/i);
-  assert.match(html, /<title>松松逛｜虚拟购物与数字衣橱<\/title>/i);
-  assert.match(html, /想买就先在这里拥有/);
-  assert.match(html, /不用真的花钱/);
+  assert.match(html, /<title>松松逛｜真实好物、虚拟购物与数字衣橱<\/title>/i);
+  assert.match(html, /喜欢的先试穿/);
+  assert.match(html, /想清楚再去官网/);
+  assert.match(html, /0 元模式保留/);
   assert.match(html, /不收集银行卡/);
   assert.match(html, /松松逛/);
   assert.match(html, /我的衣橱/);
@@ -43,12 +44,15 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, deferredViews, shopView, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, realisticAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
+  const [page, layout, app, deferredViews, shopView, realShopView, virtualShopView, officialStores, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, realisticAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/DeferredMuseViews.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/ShopView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/RealShopView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/VirtualShopView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/official-stores.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/components/ClosetView.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/StudioView.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/DailyView.tsx", import.meta.url), "utf8"),
@@ -74,10 +78,10 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(page, /const pageOwner = user\?\.email \?\? localOwner/);
   assert.match(page, /ownerBindingForOwner\(pageOwner\)/);
   assert.match(page, /expectedOwner=\{expectedOwner\}/);
-  assert.match(layout, /松松逛｜虚拟购物与数字衣橱/);
+  assert.match(layout, /松松逛｜真实好物、虚拟购物与数字衣橱/);
   assert.match(layout, /\/og-real-v1\.jpg/);
   assert.match(layout, /\/favicon-48\.png/);
-  assert.match(app, /VIRTUAL SHOPPING/);
+  assert.match(app, /REAL \+ VIRTUAL SHOPPING/);
   assert.match(app, /<DeferredAddGarmentDialog/);
   assert.match(app, /<DeferredShopView/);
   assert.match(app, /<DeferredClosetView/);
@@ -164,12 +168,32 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /retryButton\.disabled = false;[\s\S]*?retryButton\.focus/);
   assert.match(app, /href="#main-content"/);
   assert.match(app, /id="main-content"/);
-  assert.match(shopView, /className="product-grid">/);
-  assert.doesNotMatch(shopView, /className="product-grid"[^>]*aria-live/);
-  assert.match(shopView, /resultAnnouncement/);
+  assert.match(shopView, /useState<ShopMode>\("real"\)/);
+  assert.match(shopView, /role="group" aria-label="购物模式"/);
+  assert.match(shopView, /aria-pressed=\{isReal\}/);
+  assert.match(shopView, /真实好物/);
+  assert.match(shopView, /0 元虚拟逛/);
+  assert.match(shopView, /import\("\.\/RealShopView"\)/);
+  assert.match(shopView, /import\("\.\/VirtualShopView"\)/);
+  assert.match(shopView, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(virtualShopView, /className="product-grid" aria-label="0 元虚拟商品"/);
+  assert.doesNotMatch(virtualShopView, /className="product-grid"[^>]*aria-live/);
+  assert.match(virtualShopView, /resultAnnouncement/);
   assert.match(closetView, /deleteAndRestoreFocus/);
-  assert.match(shopView, /toggleSavedAndRestoreFocus/);
-  assert.match(shopView, /query\.trim\(\)\.toLocaleLowerCase\("zh-CN"\)/);
+  assert.match(virtualShopView, /toggleSavedAndRestoreFocus/);
+  assert.match(virtualShopView, /query\.trim\(\)\.toLocaleLowerCase\("zh-CN"\)/);
+  assert.match(realShopView, /OFFICIAL_STORES\.map/);
+  assert.match(realShopView, /target="_blank"/);
+  assert.match(realShopView, /rel="noopener noreferrer external"/);
+  assert.match(realShopView, /referrerPolicy="no-referrer"/);
+  assert.match(realShopView, /不存在隶属、授权或赞助关系/);
+  assert.match(realShopView, /onImportLink\(event\.currentTarget\)/);
+  for (const name of ["淘宝", "天猫", "ZARA", "Aritzia", "UNIQLO", "lululemon", "SNIDEL"]) {
+    assert.match(officialStores, new RegExp(`name: "${name}"`));
+  }
+  assert.match(officialStores, /url\.protocol === "https:"/);
+  assert.match(officialStores, /officialStoreHosts\.has\(url\.hostname\.toLowerCase\(\)\)/);
+  assert.doesNotMatch(officialStores, /\b(?:price|stock|inventory|discount):/);
   assert.match(studioView, /const inputValue = draft\.source === value/);
   assert.doesNotMatch(studioView, /key=\{value\} type="number"/);
   assert.match(closetView, /loading="lazy" decoding="async"/);
@@ -178,6 +202,12 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(addDialog, /aria-errormessage=\{importError/);
   assert.match(addDialog, /maxLength=\{MAX_GARMENT_NAME_LENGTH\}/);
   assert.match(addDialog, /maxLength=\{MAX_GARMENT_SOURCE_URL_LENGTH\}/);
+  assert.match(addDialog, /initialMode = "photo"/);
+  assert.match(addDialog, /useState<"photo" \| "link" \| "manual">\(initialMode\)/);
+  assert.match(app, /setAddInitialMode\("link"\)/);
+  assert.match(app, /initialMode=\{addInitialMode\}/);
+  assert.match(closetView, /item\.sourceUrl && isValidGarmentSourceUrl\(item\.sourceUrl\)/);
+  assert.match(closetView, /rel="noopener noreferrer external nofollow ugc"/);
   assert.match(addDialog, /isValidGarmentSourceUrl\(trimmedSourceUrl\)/);
   assert.match(addDialog, /sourceUrlInputRef\.current\?\.focus\(\)/);
   assert.match(addDialog, /file\.size === 0/);
@@ -427,7 +457,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(addDialog, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true">\{removalStatus\}/);
   assert.match(app, /aria-describedby="cart-payment-note cart-checkout-note"/);
-  assert.match(shopView, /className="chip-row" role="group" aria-label="商品筛选"/);
+  assert.match(virtualShopView, /className="chip-row" role="group" aria-label="商品筛选"/);
   assert.match(app, /aria-valuetext=\{`放松程度 \$\{mood\}%`\}/);
   assert.match(addDialog, /正在保存衣物，请稍候/);
   assert.match(addDialog, /if \(submitting \|\| analyzing\) return/);
@@ -490,6 +520,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(styles, /\.skip-link:focus/);
   assert.match(styles, /^\*,\s*\n\*::before,\s*\n\*::after \{/);
   assert.match(styles, /\.external-update \{/);
+  assert.match(styles, /\.shop-mode-switch \{/);
+  assert.match(styles, /\.official-store-grid \{/);
+  assert.match(styles, /\.wardrobe-source-link \{/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(hosting, /"r2": "WARDROBE_IMAGES"/);
   assert.match(packageJson, /"three"/);
