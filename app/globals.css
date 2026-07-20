@@ -1460,6 +1460,45 @@ input[type="range"] {
   line-height: 1;
 }
 
+.page-hero--virtual {
+  background: #eee8df;
+  border: 1px solid var(--line);
+  min-height: 300px;
+  overflow: hidden;
+  padding: 42px;
+}
+
+.page-hero--virtual > div:first-child {
+  max-width: 680px;
+}
+
+.page-hero--virtual .imagination-balance {
+  align-items: flex-start;
+  background-image:
+    linear-gradient(0deg, rgba(45, 38, 38, 0.72), transparent 58%),
+    url("/shop/virtual-product-sprite-v1.jpg");
+  background-position: center, 100% 0;
+  background-size: 100% 100%, 400% 400%;
+  border-radius: 0;
+  color: #fff;
+  height: 220px;
+  justify-content: flex-end;
+  padding: 18px;
+  transform: none;
+  width: 220px;
+}
+
+.page-hero--virtual .imagination-balance span,
+.page-hero--virtual .imagination-balance small {
+  color: rgba(255, 255, 255, 0.82);
+  letter-spacing: 0.1em;
+}
+
+.page-hero--virtual .imagination-balance strong {
+  font-size: 34px;
+  margin: 3px 0;
+}
+
 .page-hero--real {
   background: linear-gradient(125deg, rgba(239, 218, 211, 0.72), rgba(231, 229, 238, 0.56));
   border: 1px solid rgba(91, 75, 71, 0.09);
@@ -1726,6 +1765,106 @@ input[type="range"] {
   text-align: center;
 }
 
+.virtual-collections {
+  margin: 58px 0 72px;
+}
+
+.virtual-section-heading {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.virtual-section-heading h2 {
+  font-family: "Songti SC", Georgia, serif;
+  font-size: clamp(30px, 4vw, 45px);
+  font-weight: 500;
+  margin-top: 6px;
+}
+
+.virtual-section-heading > p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  max-width: 280px;
+  text-align: right;
+}
+
+.virtual-section-heading > p strong {
+  color: var(--ink);
+  font-family: Georgia, serif;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.collection-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.collection-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  display: block;
+  overflow: hidden;
+  text-align: left;
+}
+
+.collection-art {
+  aspect-ratio: 1;
+  display: block;
+  overflow: hidden;
+}
+
+.collection-card:hover .product-photo-sprite {
+  transform: scale(1.035);
+}
+
+.collection-copy {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+}
+
+.collection-copy small,
+.product-brand,
+.virtual-promise small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.collection-copy strong {
+  font-family: "Songti SC", Georgia, serif;
+  font-size: 22px;
+  font-weight: 600;
+  margin: 5px 0;
+}
+
+.collection-copy span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.collection-copy i {
+  color: var(--ink);
+  font-size: 9px;
+  font-style: normal;
+  margin-top: 14px;
+}
+
+.virtual-catalog {
+  scroll-margin-top: 92px;
+}
+
+.virtual-section-heading--catalog {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
 .shop-toolbar,
 .closet-toolbar {
   align-items: center;
@@ -1733,6 +1872,83 @@ input[type="range"] {
   gap: 18px;
   justify-content: space-between;
   margin-bottom: 26px;
+}
+
+.virtual-catalog .shop-toolbar {
+  margin-bottom: 16px;
+}
+
+.shop-toolbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.shop-sort,
+.saved-filter {
+  align-items: center;
+  background: var(--white);
+  border: 1px solid var(--line);
+  display: flex;
+  font-size: 10px;
+  min-height: 44px;
+}
+
+.shop-sort {
+  gap: 8px;
+  padding-left: 13px;
+}
+
+.shop-sort > span {
+  color: var(--muted);
+}
+
+.shop-sort select {
+  border: 0;
+  cursor: pointer;
+  min-height: 42px;
+  outline: none;
+  padding: 0 30px 0 2px;
+}
+
+.saved-filter {
+  gap: 8px;
+  padding: 0 13px;
+}
+
+.saved-filter b {
+  align-items: center;
+  background: var(--paper-deep);
+  border-radius: 50%;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.saved-filter.is-active {
+  background: var(--ink);
+  color: #fff;
+}
+
+.saved-filter.is-active b {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.catalog-filter-row {
+  align-items: flex-start;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 48px 1fr;
+  padding: 13px 0;
+}
+
+.catalog-filter-row > span {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding-top: 8px;
 }
 
 .search-box {
@@ -1793,35 +2009,39 @@ input[type="range"] {
 
 .product-grid {
   display: grid;
-  gap: 22px;
-  grid-template-columns: repeat(3, 1fr);
+  gap: 40px 16px;
+  grid-template-columns: repeat(4, 1fr);
+  margin-top: 30px;
 }
 
 .product-card {
-  background: var(--white);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  transition: box-shadow 220ms ease, transform 220ms ease;
+  min-width: 0;
 }
 
 .product-card:hover {
-  box-shadow: 0 20px 50px rgba(73, 62, 57, 0.1);
-  transform: translateY(-4px);
+  transform: none;
 }
 
 .product-image-wrap {
+  aspect-ratio: 1;
   background: #eee9e1;
-  height: 330px;
+  border: 1px solid rgba(75, 64, 61, 0.08);
+  overflow: hidden;
   position: relative;
 }
 
-.product-card:nth-child(3n + 2) .product-image-wrap {
-  background: #e7e2ec;
+.product-photo-sprite {
+  background-image: url("/shop/virtual-product-sprite-v1.jpg");
+  background-position: var(--sprite-x) var(--sprite-y);
+  background-repeat: no-repeat;
+  background-size: 400% 400%;
+  height: 100%;
+  transition: transform 800ms cubic-bezier(0.2, 0.75, 0.2, 1);
+  width: 100%;
 }
 
-.product-card:nth-child(3n) .product-image-wrap {
-  background: #e3e8df;
+.product-card:hover .product-photo-sprite {
+  transform: scale(1.035);
 }
 
 .virtual-pill,
@@ -1859,7 +2079,7 @@ input[type="range"] {
 }
 
 .product-info {
-  padding: 19px;
+  padding: 15px 2px 0;
 }
 
 .product-meta {
@@ -1890,13 +2110,28 @@ input[type="range"] {
   font-family: "Songti SC", Georgia, serif;
   font-size: 20px;
   font-weight: 600;
-  margin: 12px 0 6px;
+  margin: 5px 0 6px;
 }
 
 .product-info > p:not(.product-meta),
 .wardrobe-info > p {
   color: var(--muted);
   font-size: 11px;
+}
+
+.product-style-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.product-style-tags span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  padding: 4px 7px;
 }
 
 .wardrobe-source-link {
@@ -1967,7 +2202,7 @@ input[type="range"] {
 
 .product-actions .button {
   font-size: 11px;
-  min-height: 39px;
+  min-height: 42px;
   padding: 0 12px;
 }
 
@@ -2124,6 +2359,29 @@ input[type="range"] {
   color: var(--muted);
   font-size: 11px;
   margin-top: 4px;
+}
+
+.virtual-promise {
+  background: #ebe5dc;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  justify-content: center;
+  margin-top: 72px;
+  padding: 38px;
+  text-align: center;
+}
+
+.virtual-promise > span {
+  font-size: 24px;
+}
+
+.virtual-promise small {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.virtual-promise strong {
+  font-size: 21px;
 }
 
 .empty-state {
@@ -3915,6 +4173,7 @@ input[type="range"] {
   .mood-control { grid-template-columns: auto minmax(160px, 1fr) auto 40px; width: 100%; }
   .home-grid { grid-template-columns: 1fr; }
   .product-grid { grid-template-columns: repeat(2, 1fr); }
+  .collection-grid { grid-template-columns: repeat(2, 1fr); }
   .official-store-grid { grid-template-columns: repeat(2, 1fr); }
   .wardrobe-grid { grid-template-columns: repeat(2, 1fr); }
   .studio-grid { grid-template-columns: 240px 1fr; }
@@ -3986,6 +4245,9 @@ input[type="range"] {
   .page-hero h1, .page-title-row h1, .studio-heading h1, .daily-hero h1 { font-size: 40px; }
   .imagination-balance { align-self: flex-end; height: 110px; width: 110px; }
   .imagination-balance strong { font-size: 36px; }
+  .page-hero--virtual { min-height: 0; padding: 24px 20px; }
+  .page-hero--virtual .imagination-balance { align-self: stretch; height: auto; min-height: 190px; width: 100%; }
+  .page-hero--virtual .imagination-balance strong { font-size: 32px; }
   .page-hero--real { padding: 24px 20px; }
   .real-shop-count { align-self: flex-end; height: 110px; width: 110px; }
   .real-shop-count strong { font-size: 34px; }
@@ -3997,8 +4259,21 @@ input[type="range"] {
   .official-store-grid { grid-template-columns: 1fr; }
   .official-store-card { min-height: 0; }
   .official-store-copy p { min-height: 0; }
+  .virtual-collections { margin: 44px 0 58px; }
+  .virtual-section-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .virtual-section-heading > p { text-align: left; }
+  .virtual-section-heading h2 { font-size: 31px; }
+  .collection-grid { gap: 10px; }
+  .collection-copy { padding: 13px 11px; }
+  .collection-copy strong { font-size: 19px; }
+  .collection-copy span { min-height: 30px; }
   .shop-toolbar, .closet-toolbar { align-items: stretch; flex-direction: column; }
+  .shop-toolbar-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .shop-sort, .saved-filter { justify-content: center; }
+  .shop-sort select { min-width: 0; padding-right: 18px; }
   .search-box { min-width: 0; width: 100%; }
+  .catalog-filter-row { display: block; }
+  .catalog-filter-row > span { display: block; padding: 0 0 8px; }
   .chip-row { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 5px; }
   .chip-row button { flex: 0 0 auto; min-height: 44px; }
   .button, .bag-button, .save-button, .icon-button, .choice-group button,
@@ -4011,8 +4286,16 @@ input[type="range"] {
   .cart-list article span, .cart-list article p, .import-tabs button,
   .dialog-footer .button, .analysis-result span, .analysis-result b,
   .analysis-result p { font-size: 12px; }
-  .product-grid { grid-template-columns: 1fr; }
-  .product-image-wrap { height: 350px; }
+  .product-grid { gap: 30px 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .product-image-wrap { height: auto; }
+  .product-info { padding-top: 11px; }
+  .product-info h2 { font-size: 17px; }
+  .product-info > p:not(.product-meta) { font-size: 10px; }
+  .product-style-tags { margin-top: 9px; }
+  .product-style-tags span { font-size: 10px; }
+  .product-bottom { align-items: flex-start; flex-direction: column; gap: 2px; margin: 13px 0 11px; }
+  .product-actions { grid-template-columns: 1fr; }
+  .virtual-promise { align-items: center; flex-direction: column; padding: 28px 18px; }
   .closet-summary { grid-template-columns: 1fr 1fr; min-height: 160px; padding: 20px; }
   .closet-summary-art { display: none; }
   .closet-summary strong { font-size: 34px; }

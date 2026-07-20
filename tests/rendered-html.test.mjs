@@ -474,7 +474,12 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(addDialog, /className="analysis-result"[\s\S]*?aria-atomic="true"/);
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true">\{removalStatus\}/);
   assert.match(app, /aria-describedby="cart-payment-note cart-checkout-note"/);
-  assert.match(virtualShopView, /className="chip-row" role="group" aria-label="商品筛选"/);
+  assert.match(virtualShopView, /className="chip-row" role="group" aria-label="商品品类筛选"/);
+  assert.match(virtualShopView, /className="chip-row" role="group" aria-label="商品风格筛选"/);
+  assert.match(virtualShopView, /aria-label="商品排序"/);
+  assert.match(virtualShopView, /COLLECTIONS\.map/);
+  assert.match(app, /松松币暂时没花/);
+  assert.match(app, />0 元完成结账</);
   assert.match(app, /aria-valuetext=\{`放松程度 \$\{mood\}%`\}/);
   assert.match(addDialog, /正在保存衣物，请稍候/);
   assert.match(addDialog, /if \(submitting \|\| analyzing\) return/);

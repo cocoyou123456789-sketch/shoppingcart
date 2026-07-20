@@ -7,7 +7,29 @@ export const DAILY_OPTIONS = {
   comfort: ["方便走动", "宽松", "不露肤", "保暖"],
 } as const;
 
-export function ProductVisual({ visual, color }: { visual: string; color: string }) {
+export function ProductVisual({
+  visual,
+  color,
+  spriteIndex,
+}: {
+  visual: string;
+  color: string;
+  spriteIndex?: number;
+}) {
+  if (typeof spriteIndex === "number") {
+    const column = spriteIndex % 4;
+    const row = Math.floor(spriteIndex / 4);
+    return (
+      <div
+        aria-hidden="true"
+        className="product-photo-sprite"
+        style={{
+          "--sprite-x": `${(column / 3) * 100}%`,
+          "--sprite-y": `${(row / 3) * 100}%`,
+        } as React.CSSProperties}
+      />
+    );
+  }
   return (
     <div className={`product-visual product-visual--${visual}`} style={{ "--item-color": color } as React.CSSProperties}>
       <span className="visual-shape" aria-hidden="true" />

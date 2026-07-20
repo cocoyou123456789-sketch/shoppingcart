@@ -29,16 +29,16 @@ export function ShopView({ onImportLink, ...virtualProps }: ShopViewProps) {
   const isReal = mode === "real";
   return (
     <div className="page page--shop">
-      <section className={`page-hero page-hero--shop ${isReal ? "page-hero--real" : ""}`}>
+      <section className={`page-hero page-hero--shop ${isReal ? "page-hero--real" : "page-hero--virtual"}`}>
         <div>
-          <p className="eyebrow">{isReal ? "REAL SHOPS · 官方与平台入口" : "VIRTUAL SHOPPING · 0 元体验"}</p>
-          <h1>{isReal ? "真实好物，先看看再决定。" : "慢慢逛，喜欢就收下。"}</h1>
-          <p>{isReal ? "去真实商家完成购买；也可以把商品链接带回数字衣橱，先做搭配和试穿参考。" : "所有商品都是虚拟的。没有库存提醒，没有倒计时，也没有任何真实支付。"}</p>
+          <p className="eyebrow">{isReal ? "REAL SHOPS · 官方与平台入口" : "DREAM BOUTIQUE · 0 元假购物"}</p>
+          <h1>{isReal ? "真实好物，先看看再决定。" : "逛够喜欢，不花一分钱。"}</h1>
+          <p>{isReal ? "去真实商家完成购买；也可以把商品链接带回数字衣橱，先做搭配和试穿参考。" : "像真的一样搜索、收藏、加袋和试穿；结账只完成想象，不填卡、不扣款，也不会产生订单。"}</p>
         </div>
         {isReal ? (
           <div className="real-shop-count" aria-label="七个已核验购物入口"><strong>7</strong><span>个入口</span><small>域名已核对</small></div>
         ) : (
-          <div className="imagination-balance"><span>今日想象力余额</span><strong>∞</strong><small>怎么逛都不会变少</small></div>
+          <div className="imagination-balance"><span>ACTUAL PAYMENT</span><strong>¥0</strong><small>实际支付永远为零</small></div>
         )}
       </section>
 

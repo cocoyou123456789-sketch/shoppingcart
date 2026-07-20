@@ -47,6 +47,18 @@ test("GitHub Pages build keeps its project base path and core product", async ()
   const cssAsset = html.match(/href="\/shoppingcart\/assets\/([^"']+\.css)"/)?.[1];
   assert.ok(entryAsset);
   assert.ok(cssAsset);
+  const cssSource = await readFile(
+    new URL(`../pages-dist/assets/${cssAsset}`, import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    cssSource,
+    /url\(\/shoppingcart\/shop\/virtual-product-sprite-v1\.jpg\)/,
+    "virtual shop photography must keep the GitHub Pages base path",
+  );
+  await access(
+    new URL("../pages-dist/shop/virtual-product-sprite-v1.jpg", import.meta.url),
+  );
 
   const gzipBytes = async (name) => gzipSync(
     await readFile(new URL(`../pages-dist/assets/${name}`, import.meta.url)),

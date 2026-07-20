@@ -604,6 +604,7 @@ export function MuseApp({
   const [addOpen, setAddOpen] = useState(false);
   const [addInitialMode, setAddInitialMode] = useState<"photo" | "link" | "manual">("photo");
   const [celebrationOpen, setCelebrationOpen] = useState(false);
+  const lastCheckout = useRef({ total: 0, itemCount: 0 });
   const [toast, setToast] = useState("");
   const [mood, setMood] = useState(62);
   const [dailyPreferences, setDailyPreferences] = useState<DailyPreferences>(DEFAULT_DAILY_PREFERENCES);
@@ -2674,13 +2675,13 @@ export function MuseApp({
 
   function addToCart(product: Product) {
     if (cartProductIds.current.has(product.id)) {
-      setToast(`${product.name} 已经在虚拟购物袋里`);
+      setToast(`${product.name} 已经在梦想袋里`);
       return;
     }
     cartProductIds.current.add(product.id);
     setCart((current) => [...current, product]);
     markLocalChange();
-    setToast(`${product.name} 已放进虚拟购物袋`);
+    setToast(`${product.name} 已放进梦想袋 · ${product.points} 松松币暂时没花`);
   }
 
   function removeFromCart(index: number) {
@@ -2704,7 +2705,7 @@ export function MuseApp({
   function tryProduct(product: Product) {
     const item = createVirtualWardrobeItem(product) as WardrobeItem | null;
     if (!item) {
-      setToast("这类商品可以放进虚拟购物袋，当前不提供虚假的试用效果");
+      setToast("这类商品可以放进梦想袋，当前不提供虚假的试用效果");
       return;
     }
     if (!wardrobe.some((entry) => entry.id === item.id) && wardrobe.length >= MAX_WARDROBE_ITEMS) {
@@ -2870,6 +2871,10 @@ export function MuseApp({
   }
 
   function checkout() {
+    lastCheckout.current = {
+      total: cart.reduce((sum, item) => sum + item.points, 0),
+      itemCount: cart.length,
+    };
     const wearable = cart.map(createVirtualWardrobeItem).filter(Boolean) as WardrobeItem[];
     const newWearable = wearable.filter(
       (item) => !wardrobe.some((entry) => entry.id === item.id),
@@ -3620,9 +3625,9 @@ export function MuseApp({
           <span aria-hidden="true" className={`sync-state sync-state--${dataMode === "云端已同步" || dataMode === "本机已保存" ? "saved" : "demo"}`}>
             <span aria-hidden="true">●</span> {dataMode}
           </span>
-          <button type="button" className="bag-button" disabled={!ready} onClick={(event) => { dialogOpenerRef.current = event.currentTarget; setCartOpen(true); }} aria-label={`打开虚拟购物袋，共 ${cart.length} 件`}>
+          <button type="button" className="bag-button" disabled={!ready} onClick={(event) => { dialogOpenerRef.current = event.currentTarget; setCartOpen(true); }} aria-label={`打开梦想袋，共 ${cart.length} 件`}>
             <span aria-hidden="true">▢</span>
-            <span>虚拟购物袋</span>
+            <span>梦想袋</span>
             <b>{cart.length}</b>
           </button>
         </div>
@@ -3771,6 +3776,8 @@ export function MuseApp({
       {addOpen && <DeferredAddGarmentDialog initialMode={addInitialMode} onClose={() => setAddOpen(false)} onAdd={addWardrobeItem} returnFocusRef={dialogOpenerRef} />}
       {celebrationOpen && (
         <CelebrationDialog
+          total={lastCheckout.current.total}
+          itemCount={lastCheckout.current.itemCount}
           onClose={() => setCelebrationOpen(false)}
           returnFocusRef={dialogOpenerRef}
           onCloset={() => {
@@ -3944,7 +3951,7 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
     const removedItem = cart[index];
     onRemove(index);
     if (removedItem) {
-      setRemovalStatus(`${removedItem.name}已从购物袋移除，还剩 ${cart.length - 1} 件。`);
+      setRemovalStatus(`${removedItem.name}已从梦想袋移除，还剩 ${cart.length - 1} 件。`);
     }
     window.requestAnimationFrame(() => {
       if (button.isConnected) return;
@@ -3961,14 +3968,14 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
     <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside ref={dialogRef} tabIndex={-1} className="cart-drawer" role="dialog" aria-modal="true" aria-labelledby="cart-title">
         <div className="drawer-header">
-          <div><p>VIRTUAL BAG</p><h2 id="cart-title" tabIndex={-1}>虚拟购物袋 <span>{cart.length}</span></h2></div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭购物袋">×</button>
+          <div><p>DREAM BAG</p><h2 id="cart-title" tabIndex={-1}>梦想袋 <span>{cart.length}</span></h2></div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭梦想袋">×</button>
         </div>
         <div className="payment-reassurance"><span aria-hidden="true">♡</span><p id="cart-payment-note"><strong>放心，这里不会扣款</strong>不需要银行卡、地址，也不会产生真实订单。</p></div>
         <div ref={cartListRef} className="cart-list">
           {cart.length ? cart.map((item, index) => (
             <article key={`${item.id}-${index}`}>
-              <div className="cart-thumb"><ProductVisual visual={item.visual} color={item.color} /></div>
+              <div className="cart-thumb"><ProductVisual visual={item.visual} color={item.color} spriteIndex={item.spriteIndex} /></div>
               <div><span>{item.category} · 虚拟商品</span><h3>{item.name}</h3><p>{item.points} 松松币</p></div>
               <button type="button" onClick={(event) => removeAndRestoreFocus(index, event)} aria-label={`移除${item.name}`}>×</button>
             </article>
@@ -3977,17 +3984,21 @@ function CartDrawer({ cart, onClose, onRemove, onCheckout, returnFocusRef }: { c
           )}
         </div>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{removalStatus}</p>
-        <div className="drawer-footer"><div><span>虚拟合计</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout} aria-describedby="cart-payment-note cart-checkout-note">完成这次虚拟购物</button><small id="cart-checkout-note">点击只会完成体验，不会提交付款或真实订单。</small></div>
+        <div className="drawer-footer"><div><span>本次差点花</span><strong>{total} 松松币</strong></div><button type="button" className="button button--primary button--full" disabled={!cart.length} onClick={onCheckout} aria-describedby="cart-payment-note cart-checkout-note">0 元完成结账</button><small id="cart-checkout-note">实际支付 ¥0；不会提交付款、地址或真实订单。</small></div>
       </aside>
     </div>
   );
 }
 
 function CelebrationDialog({
+  total,
+  itemCount,
   onClose,
   onCloset,
   returnFocusRef,
 }: {
+  total: number;
+  itemCount: number;
   onClose: () => void;
   onCloset: () => void;
   returnFocusRef: React.RefObject<HTMLElement | null>;
@@ -4016,12 +4027,12 @@ function CelebrationDialog({
         </span>
         <p>VIRTUAL CHECKOUT COMPLETE</p>
         <h2 id="celebration-title">
-          喜欢的东西已经收下，
+          {itemCount} 件喜欢已经收下，
           <br />
-          这次不用花一分钱。
+          {total} 松松币仍在钱包里。
         </h2>
         <p className="celebration-copy">
-          服装类虚拟商品会放进衣橱；美妆与装饰会留在虚拟收藏。上装、下装、连衣裙和外套还可以继续让分身试穿。这里没有付款，也没有真实订单。
+          这是“本次未花”的体验记录，不代表真实储蓄。服装类虚拟商品会放进衣橱；美妆与装饰会留在收藏。这里没有付款，也没有真实订单。
         </p>
         <div>
           <button
