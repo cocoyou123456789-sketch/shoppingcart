@@ -20,6 +20,20 @@ const SKIN_TONES = [
   ["#9d654a", "深暖色"],
   ["#684235", "深棕色"],
 ] as const;
+const HAIR_COLORS = [
+  ["#211b1e", "自然黑"],
+  ["#4a3029", "深棕"],
+  ["#754434", "栗棕"],
+  ["#9a513e", "暖红棕"],
+  ["#c6a77f", "浅金棕"],
+  ["#9f879f", "雾紫"],
+] as const;
+const BODY_FEATURE_OPTIONS = [
+  ["none", "无"],
+  ["freckles", "雀斑"],
+  ["beauty-mark", "美人痣"],
+  ["tattoo", "锁骨纹样"],
+] as const;
 
 export function StudioView({
   wardrobe,
@@ -63,7 +77,7 @@ export function StudioView({
   function updateAvatarMetrics(action: React.SetStateAction<StudioViewProps["metrics"]>) {
     if (previewMode !== "3d") {
       setPreviewMode("3d");
-      setPreviewAnnouncement("已切换到可调三维分身，身材变化会实时显示");
+      setPreviewAnnouncement("已切换到可调真人 3D");
     }
     setMetrics(action);
   }
@@ -96,7 +110,7 @@ export function StudioView({
 
   return (
     <div className="page page--studio">
-      <section className="studio-heading"><div><p className="eyebrow">3D FITTING STUDIO</p><h1>让分身更像你</h1><p>没有标准身材，调到看起来像你就好。</p></div><div className="studio-disclaimer"><span aria-hidden="true">i</span><p><strong>视觉参考，不是合身保证</strong>面料垂坠、弹性和真实松量可能不同。</p></div></section>
+      <section className="studio-heading"><div><p className="eyebrow">3D FITTING STUDIO</p><h1>让分身更像你</h1><p>调节身形、发色和特征。</p></div><div className="studio-disclaimer"><span aria-hidden="true">i</span><p><strong>仅供视觉参考</strong>面料和松量可能不同。</p></div></section>
       <section className="studio-grid">
         <aside className="studio-panel studio-closet-panel" aria-labelledby="studio-closet-title">
           <div className="panel-title"><div><p id="studio-closet-title">可试穿衣物</p><strong>{visible.length} 件</strong></div><span>{closetCategory === "全部" ? "点击穿上" : `${closetCategory}分类`}</span></div>
@@ -111,10 +125,10 @@ export function StudioView({
         </aside>
         <div className="studio-avatar-wrap">
           <div className="studio-avatar-toolbar">
-            <div className="studio-status"><span><i className="status-dot" /> {previewMode === "realistic" ? "静态照片参考" : "可调三维分身"}</span><b>{previewMode === "realistic" ? "照片不会随身材参数变化" : `实时联动 · ${metrics.height} cm · ${metrics.weight} kg`}</b></div>
+            <div className="studio-status"><span><i className="status-dot" /> {previewMode === "realistic" ? "静态照片参考" : "连续人体 3D"}</span><b>{previewMode === "realistic" ? "照片不会随身材参数变化" : `真人基模变形 · ${metrics.height} cm · ${metrics.weight} kg`}</b></div>
             <div className="studio-preview-tabs" role="group" aria-label="分身预览模式">
-              <button type="button" aria-pressed={previewMode === "3d"} className={previewMode === "3d" ? "is-active" : ""} onClick={() => { setPreviewMode("3d"); setPreviewAnnouncement("正在显示可调三维分身"); }}>可调 3D</button>
-              <button type="button" aria-pressed={previewMode === "realistic"} className={previewMode === "realistic" ? "is-active" : ""} onClick={() => { setPreviewMode("realistic"); setPreviewAnnouncement("正在显示静态照片参考；照片不会随身材参数变化"); }}>照片参考</button>
+              <button type="button" aria-pressed={previewMode === "3d"} className={previewMode === "3d" ? "is-active" : ""} onClick={() => { setPreviewMode("3d"); setPreviewAnnouncement("正在显示可调真人 3D"); }}>可调真人 3D</button>
+              <button type="button" aria-pressed={previewMode === "realistic"} className={previewMode === "realistic" ? "is-active" : ""} onClick={() => { setPreviewMode("realistic"); setPreviewAnnouncement("正在显示静态照片参考"); }}>照片参考</button>
             </div>
           </div>
           <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{previewAnnouncement}</p>
@@ -125,8 +139,8 @@ export function StudioView({
               <DeferredAvatar metrics={metrics} outfit={avatarOutfit} priority />
             )}
             {previewMode === "3d" ? <>
-              <p className="studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮</p>
-              <p className="studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放</p>
+              <p className="studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮或按钮缩放</p>
+              <p className="studio-input-hint studio-input-hint--touch">横向拖动旋转 · 按钮缩放</p>
             </> : null}
           </div>
           <section className="wearing-dock" aria-labelledby="wearing-dock-title">
@@ -142,7 +156,7 @@ export function StudioView({
           <div className="panel-title"><div><p id="studio-body-title">我的分身</p><strong>手动微调</strong></div><span>实时更新 3D</span></div>
           <div className="preset-group"><span id="body-shape-label">身形起点</span><div className="preset-grid" role="group" aria-labelledby="body-shape-label">{([ ["straight", "直筒"], ["pear", "梨形"], ["hourglass", "沙漏"], ["inverted", "倒三角"], ["apple", "苹果形"] ] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={metrics.bodyShape === value} className={metrics.bodyShape === value ? "is-active" : ""} onClick={() => choosePreset(value)}>{label}</button>)}</div></div>
           <div className="metric-pair"><MetricInput label="身高" value={metrics.height} min={145} max={195} unit="cm" onChange={(height) => updateAvatarMetrics((current) => ({ ...current, height }))} /><MetricInput label="体重" value={metrics.weight} min={38} max={120} unit="kg" onChange={(weight) => updateAvatarMetrics((current) => ({ ...current, weight }))} /></div>
-          <p className="weight-response-note"><span aria-hidden="true">↕</span> 体重用于估算整体轮廓；胸、腰、臀围仍可按你自己单独校准。</p>
+          <p className="weight-response-note"><span aria-hidden="true">↕</span> 体重改变全身围度；胸、腰、臀仍可单独校准。</p>
           <div className="slider-list">
             <BodySlider label="肩线" value={metrics.shoulder} min={32} max={52} left="窄" right="宽" onChange={(shoulder) => updateAvatarMetrics((current) => ({ ...current, shoulder }))} />
             <BodySlider label="胸围" value={metrics.chest} min={72} max={126} left="小" right="大" onChange={(chest) => updateAvatarMetrics((current) => ({ ...current, chest }))} />
@@ -152,6 +166,9 @@ export function StudioView({
             <BodySlider label="腿长比例" value={metrics.legs} min={72} max={94} left="短" right="长" onChange={(legs) => updateAvatarMetrics((current) => ({ ...current, legs }))} />
           </div>
           <div className="skin-row"><span id="skin-tone-label">肤色示意</span><div role="group" aria-labelledby="skin-tone-label">{SKIN_TONES.map(([tone, label]) => <button type="button" key={tone} aria-label={label} aria-pressed={metrics.skinTone === tone} className={metrics.skinTone === tone ? "is-active" : ""} style={{ background: tone }} onClick={() => updateAvatarMetrics((current) => ({ ...current, skinTone: tone }))} />)}</div></div>
+          <div className="skin-row hair-color-row"><span id="hair-color-label">发色</span><div role="group" aria-labelledby="hair-color-label">{HAIR_COLORS.map(([tone, label]) => <button type="button" key={tone} aria-label={label} aria-pressed={metrics.hairColor === tone} className={metrics.hairColor === tone ? "is-active" : ""} style={{ background: tone }} onClick={() => updateAvatarMetrics((current) => ({ ...current, hairColor: tone }))} />)}</div></div>
+          <div className="feature-choice-row"><span id="body-feature-label">外观特征</span><div role="group" aria-labelledby="body-feature-label">{BODY_FEATURE_OPTIONS.map(([value, label]) => <button type="button" key={value} aria-pressed={metrics.bodyFeature === value} className={metrics.bodyFeature === value ? "is-active" : ""} onClick={() => updateAvatarMetrics((current) => ({ ...current, bodyFeature: value }))}>{label}</button>)}</div></div>
+          <p className="appearance-privacy-note">设置保存在分身资料中；衣服可能遮住特征。</p>
           <button type="button" className="button button--primary button--full" disabled={profileSaving} onClick={onSave}>{profileSaving ? "正在安心保存…" : "这就是现在的我"}</button>
           <div className="fit-readout"><div><span>当前上身松量</span><b>{fitLabel}</b></div><p>{ease === null ? "补充衣物胸围后，可以得到更可靠的参考。" : `根据已填数据，衣物与身体胸围相差约 ${ease} cm。`}</p><small>尺码建议不代表实际舒适度。</small></div>
         </aside>

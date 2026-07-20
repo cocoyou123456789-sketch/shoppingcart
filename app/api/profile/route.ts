@@ -6,6 +6,14 @@ import {
   requestDataGeneration,
   staleDataGenerationResponse,
 } from "../../lib/data-generation";
+import {
+  DEFAULT_BODY_FEATURE,
+  DEFAULT_HAIR_COLOR,
+  isBodyFeature,
+  isHexColor,
+  normalizeBodyFeature,
+  normalizeHexColor,
+} from "../../lib/avatar-appearance";
 import { requireExpectedOwner } from "../../lib/request-owner";
 import { createPerBindingInitializer } from "../../lib/per-binding-initializer.mjs";
 
@@ -20,6 +28,8 @@ type ProfileRow = {
   legs: number;
   skin_tone: string;
   body_shape: string;
+  hair_color: string;
+  body_feature: string;
   revision: number;
 };
 
@@ -35,6 +45,8 @@ function profileFromRow(row: ProfileRow) {
     legs: row.legs,
     skinTone: row.skin_tone,
     bodyShape: row.body_shape,
+    hairColor: normalizeHexColor(row.hair_color),
+    bodyFeature: normalizeBodyFeature(row.body_feature),
   };
 }
 
@@ -45,11 +57,29 @@ async function profileRow(db: D1Database, owner: string) {
     .first<ProfileRow>();
 }
 
-async function hasProfileRevisionColumn(db: D1Database) {
+async function profileColumnNames(db: D1Database) {
   const columns = await db
     .prepare("PRAGMA table_info(body_profiles)")
     .all<{ name: string }>();
-  return columns.results.some((column) => column.name === "revision");
+  return new Set(columns.results.map((column) => column.name));
+}
+
+async function ensureProfileColumn(
+  db: D1Database,
+  knownColumns: Set<string>,
+  column: string,
+  statement: string,
+) {
+  if (knownColumns.has(column)) return;
+  try {
+    await db.prepare(statement).run();
+    knownColumns.add(column);
+  } catch (error) {
+    // Different Worker isolates can migrate the same binding concurrently.
+    // Ignore only the race where another isolate has provably added the column.
+    if (!(await profileColumnNames(db)).has(column)) throw error;
+    knownColumns.add(column);
+  }
 }
 
 async function initializeProfileTable(db: D1Database) {
@@ -65,19 +95,30 @@ async function initializeProfileTable(db: D1Database) {
     legs INTEGER NOT NULL,
     skin_tone TEXT NOT NULL,
     body_shape TEXT NOT NULL,
+    hair_color TEXT NOT NULL DEFAULT '${DEFAULT_HAIR_COLOR}',
+    body_feature TEXT NOT NULL DEFAULT '${DEFAULT_BODY_FEATURE}',
     revision INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`).run();
-  if (await hasProfileRevisionColumn(db)) return;
-  try {
-    await db.prepare(
-      "ALTER TABLE body_profiles ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
-    ).run();
-  } catch (error) {
-    // Concurrent first requests can both observe the legacy schema. One ALTER
-    // wins; the loser may ignore only the proven duplicate-column race.
-    if (!(await hasProfileRevisionColumn(db))) throw error;
-  }
+  const columns = await profileColumnNames(db);
+  await ensureProfileColumn(
+    db,
+    columns,
+    "revision",
+    "ALTER TABLE body_profiles ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+  );
+  await ensureProfileColumn(
+    db,
+    columns,
+    "hair_color",
+    `ALTER TABLE body_profiles ADD COLUMN hair_color TEXT NOT NULL DEFAULT '${DEFAULT_HAIR_COLOR}'`,
+  );
+  await ensureProfileColumn(
+    db,
+    columns,
+    "body_feature",
+    `ALTER TABLE body_profiles ADD COLUMN body_feature TEXT NOT NULL DEFAULT '${DEFAULT_BODY_FEATURE}'`,
+  );
 }
 
 export const ensureProfileTable = createPerBindingInitializer(initializeProfileTable);
@@ -155,6 +196,20 @@ export async function PUT(request: Request) {
     const bodyShape = String(payload.bodyShape ?? "");
     if (!/^#[0-9a-f]{6}$/i.test(skinTone)) return Response.json({ error: "invalid skin tone" }, { status: 400 });
     if (!["straight", "pear", "hourglass", "inverted", "apple"].includes(bodyShape)) return Response.json({ error: "invalid body shape" }, { status: 400 });
+    const hasHairColor = Object.hasOwn(payload, "hairColor");
+    const hasBodyFeature = Object.hasOwn(payload, "bodyFeature");
+    if (hasHairColor && !isHexColor(payload.hairColor)) {
+      return Response.json({ error: "invalid hair color" }, { status: 400 });
+    }
+    if (hasBodyFeature && !isBodyFeature(payload.bodyFeature)) {
+      return Response.json({ error: "invalid body feature" }, { status: 400 });
+    }
+    const hairColor = normalizeHexColor(
+      hasHairColor ? payload.hairColor : DEFAULT_HAIR_COLOR,
+    );
+    const bodyFeature = normalizeBodyFeature(
+      hasBodyFeature ? payload.bodyFeature : DEFAULT_BODY_FEATURE,
+    );
 
     const db = await getRawDb();
     await ensureProfileTable(db);
@@ -166,8 +221,8 @@ export async function PUT(request: Request) {
     }
     const result = await db.prepare(`INSERT INTO body_profiles (
       owner_email, height, weight, shoulder, chest, waist, hips, torso, legs,
-      skin_tone, body_shape, revision, updated_at
-    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP
+      skin_tone, body_shape, hair_color, body_feature, revision, updated_at
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP
     WHERE COALESCE(
       (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
       'initial'
@@ -180,7 +235,10 @@ export async function PUT(request: Request) {
       height = excluded.height, weight = excluded.weight, shoulder = excluded.shoulder,
       chest = excluded.chest, waist = excluded.waist, hips = excluded.hips,
       torso = excluded.torso, legs = excluded.legs, skin_tone = excluded.skin_tone,
-      body_shape = excluded.body_shape, revision = body_profiles.revision + 1,
+      body_shape = excluded.body_shape,
+      hair_color = CASE WHEN ? = 1 THEN excluded.hair_color ELSE body_profiles.hair_color END,
+      body_feature = CASE WHEN ? = 1 THEN excluded.body_feature ELSE body_profiles.body_feature END,
+      revision = body_profiles.revision + 1,
       updated_at = CURRENT_TIMESTAMP
     WHERE body_profiles.revision = ? AND ? > 0 AND COALESCE(
       (SELECT generation FROM owner_data_generations WHERE owner_email = ?),
@@ -189,8 +247,10 @@ export async function PUT(request: Request) {
       .bind(
         owner, values.height, values.weight, values.shoulder, values.chest,
         values.waist, values.hips, values.torso, values.legs, skinTone, bodyShape,
+        hairColor, bodyFeature,
         owner, requestedGeneration,
         expectedRevision, owner,
+        Number(hasHairColor), Number(hasBodyFeature),
         expectedRevision, expectedRevision, owner, requestedGeneration,
       )
       .run();

@@ -2792,7 +2792,8 @@ input[type="range"] {
 }
 
 .preset-group > span,
-.skin-row > span {
+.skin-row > span,
+.feature-choice-row > span {
   color: var(--muted);
   display: block;
   font-size: 10px;
@@ -2924,7 +2925,9 @@ input[type="range"] {
 
 .skin-row > div {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
+  justify-content: flex-end;
 }
 
 .skin-row button {
@@ -2937,6 +2940,39 @@ input[type="range"] {
 
 .skin-row button.is-active {
   box-shadow: 0 0 0 2px var(--coral);
+}
+
+.feature-choice-row {
+  margin-bottom: 10px;
+}
+
+.feature-choice-row > div {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.feature-choice-row button {
+  background: #f2eee7;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 10px;
+  min-height: 34px;
+}
+
+.feature-choice-row button.is-active {
+  background: var(--coral-soft);
+  border-color: rgba(173, 95, 79, 0.3);
+  color: var(--coral-dark);
+  font-weight: 700;
+}
+
+.appearance-privacy-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  margin: 0 0 12px;
 }
 
 .body-panel > .button {
@@ -3998,7 +4034,7 @@ input[type="range"] {
   .body-panel .slider-list { display: block; }
   .wearing-dock { align-items: stretch; flex-direction: column; }
   .studio-input-hint { top: 132px; }
-  .view-switcher button, .wearing-chips button, .reset-button, .preset-grid button, .mini-chip-row button { min-height: 44px; }
+  .view-switcher button, .wearing-chips button, .reset-button, .preset-grid button, .feature-choice-row button, .mini-chip-row button { min-height: 44px; }
   .skin-row button { height: 44px; width: 44px; }
   .metric-input input, .body-panel > .button, .body-slider input { min-height: 44px; }
   .reset-button { align-self: flex-end; }

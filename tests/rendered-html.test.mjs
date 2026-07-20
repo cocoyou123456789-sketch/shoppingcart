@@ -44,7 +44,7 @@ test("server-renders the finished 松松逛 product", async () => {
 });
 
 test("keeps product storage, metadata, and 3D implementation wired", async () => {
-  const [page, layout, app, deferredViews, shopView, realShopView, virtualShopView, officialStores, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, realisticAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles] = await Promise.all([
+  const [page, layout, app, deferredViews, shopView, realShopView, virtualShopView, officialStores, closetView, studioView, dailyView, addDialog, deferredAddDialog, dialogAccessibility, avatar, avatarRuntime, deferredAvatar, realisticAvatar, wardrobeRoute, imageRoute, profileRoute, personalDataRoute, hosting, packageJson, requestOwner, styles, avatarAppearance, databaseSchema, profileMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/MuseApp.tsx", import.meta.url), "utf8"),
@@ -71,6 +71,9 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/request-owner.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/avatar-appearance.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0006_unknown_carmella_unuscione.sql", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /<MuseApp[^>]+storageOwner=/);
@@ -326,7 +329,7 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(app, /cloudItemIds\.current\.has/);
   assert.match(app, /savedProductIds/);
   assert.match(avatar, /WebGLRenderer/);
-  assert.match(avatar, /OrbitControls/);
+  assert.match(avatar, /AvatarOrbitControls/);
   assert.match(avatar, /webglcontextlost/);
   assert.match(avatar, /forceContextLoss/);
   assert.match(avatar, /1000 \/ 30/);
@@ -373,9 +376,8 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
     avatar,
     /const renderReady = renderStatus === "ready";[\s\S]*?!renderReady \?[\s\S]*?正在启动三维预览[\s\S]*?aria-label="三维分身已加载/,
   );
-  assert.match(avatar, /ellipticalRingGeometry\(\s*profile\.torsoRings/);
-  assert.match(avatar, /"eye-white"/);
-  assert.match(avatar, /"nose-bridge"/);
+  assert.match(avatar, /avatar\.add\(buildHumanAvatar\(humanTemplate, metrics\)\)/);
+  assert.doesNotMatch(avatar, /"human-head"|"nose-bridge"/);
   assert.match(avatar, /renderer\.toneMapping = ACESFilmicToneMapping/);
   assert.match(avatar, /useState<CameraView>\("front"\)/);
   assert.match(avatar, /const AVATAR_AUTO_ROTATE_BY_DEFAULT = false/);
@@ -384,7 +386,6 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(avatar, /runtime\.fitView\(cameraViewRef\.current, true\)/);
   assert.match(avatar, /ring\.xRadius \+ xClearance/);
   assert.match(avatar, /MathUtils\.inverseLerp\(joints\.hip, joints\.waist, y\)/);
-  assert.match(avatar, /headGroup\.scale\.setScalar\(headScale\)/);
   assert.match(avatar, /if \(rings\.length < 2 \|\| segments < 3\)/);
   assert.match(avatar, /const cropped = garmentLooksLike\(top, \/短款\|露腰\|crop\/i\)/);
   assert.doesNotMatch(avatar, /const armGeo = new CapsuleGeometry/);
@@ -394,14 +395,20 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(studioView, /id="studio-body-title"/);
   assert.match(app, /可调 3D 试穿/);
   assert.match(studioView, /useState<"realistic" \| "3d">\("3d"\)/);
-  assert.match(studioView, /可调三维分身/);
-  assert.match(studioView, />可调 3D<\/button>/);
+  assert.match(studioView, /连续人体 3D/);
+  assert.match(studioView, />可调真人 3D<\/button>/);
   assert.match(studioView, />照片参考<\/button>/);
   assert.match(studioView, /照片不会随身材参数变化/);
-  assert.match(studioView, /实时联动 · \$\{metrics\.height\} cm · \$\{metrics\.weight\} kg/);
+  assert.match(studioView, /真人基模变形 · \$\{metrics\.height\} cm · \$\{metrics\.weight\} kg/);
+  assert.match(studioView, /const HAIR_COLORS/);
+  assert.match(studioView, /const BODY_FEATURE_OPTIONS/);
+  assert.match(studioView, /metrics\.hairColor === tone/);
+  assert.match(studioView, /metrics\.bodyFeature === value/);
+  assert.match(avatar, /loadHumanAvatarTemplate/);
+  assert.match(avatar, /buildHumanAvatar\(humanTemplate, metrics\)/);
   assert.match(studioView, /function updateAvatarMetrics/);
   assert.match(studioView, /setPreviewMode\("3d"\)/);
-  assert.match(studioView, /体重用于估算整体轮廓/);
+  assert.match(studioView, /体重改变全身围度/);
   assert.match(studioView, /onChange=\{\(event\) => edit\(event\.target\.value\)\}/);
   assert.match(studioView, /parsed >= min && parsed <= max/);
   assert.match(realisticAvatar, /real-model-base-v1\.jpg/);
@@ -414,11 +421,11 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(realisticAvatar, /role="img"/);
   assert.match(
     studioView,
-    /studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮缩放 · 也可使用上方按钮/,
+    /studio-input-hint studio-input-hint--pointer">拖动旋转 · 滚轮或按钮缩放/,
   );
   assert.match(
     studioView,
-    /studio-input-hint studio-input-hint--touch">单指横向拖动旋转 · 使用上方按钮缩放/,
+    /studio-input-hint studio-input-hint--touch">横向拖动旋转 · 按钮缩放/,
   );
   assert.match(
     studioView,
@@ -448,7 +455,10 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(studioView, /role="status" aria-live="polite" aria-atomic="true">\{outfitStatus\}/);
   assert.match(studioView, /setOutfitStatus\(initialOutfitStatus\)/);
   assert.match(studioView, /onInitialOutfitStatusAnnounced\?\.\(\)/);
-  assert.match(avatar, /buildAvatar\(initialInput\.metrics, initialInput\.outfit, reducedDetail, resources\)/);
+  assert.match(
+    avatar,
+    /buildAvatar\(\s*initialInput\.metrics,\s*initialInput\.outfit,\s*reducedDetail,\s*resources,\s*humanTemplate,\s*\)/,
+  );
   assert.match(avatar, /runtime\.reducedDetail,\s*runtime\.resources,/);
   assert.match(avatarRuntime, /disposeAvatar\(previousAvatar\)/);
   assert.match(avatarRuntime, /shadowMap\.needsUpdate = true/);
@@ -499,6 +509,27 @@ test("keeps product storage, metadata, and 3D implementation wired", async () =>
   assert.match(profileRoute, /profile revision conflict/);
   assert.match(profileRoute, /revision = body_profiles\.revision \+ 1/);
   assert.match(profileRoute, /ALTER TABLE body_profiles ADD COLUMN revision/);
+  assert.match(profileRoute, /ALTER TABLE body_profiles ADD COLUMN hair_color/);
+  assert.match(profileRoute, /ALTER TABLE body_profiles ADD COLUMN body_feature/);
+  assert.match(profileRoute, /hair_color = CASE WHEN \? = 1/);
+  assert.match(profileRoute, /body_feature = CASE WHEN \? = 1/);
+  assert.match(profileRoute, /isHexColor\(payload\.hairColor\)/);
+  assert.match(profileRoute, /isBodyFeature\(payload\.bodyFeature\)/);
+  assert.match(app, /hairColor: DEFAULT_HAIR_COLOR/);
+  assert.match(app, /bodyFeature: DEFAULT_BODY_FEATURE/);
+  assert.match(app, /function normalizeStoredAppearance/);
+  assert.match(app, /hairColor: normalizeHexColor\(value\.hairColor\)/);
+  assert.match(app, /bodyFeature: normalizeBodyFeature\(value\.bodyFeature\)/);
+  assert.match(app, /const normalizedMetrics = metrics/);
+  assert.match(avatarAppearance, /DEFAULT_HAIR_COLOR = "#2d2529"/);
+  assert.match(avatarAppearance, /DEFAULT_BODY_FEATURE: BodyFeature = "none"/);
+  assert.match(avatarAppearance, /"freckles"/);
+  assert.match(avatarAppearance, /"beauty-mark"/);
+  assert.match(avatarAppearance, /"tattoo"/);
+  assert.match(databaseSchema, /hairColor: text\("hair_color"\).*DEFAULT_HAIR_COLOR/);
+  assert.match(databaseSchema, /bodyFeature: text\("body_feature"\).*DEFAULT_BODY_FEATURE/);
+  assert.match(profileMigration, /ADD `hair_color` text DEFAULT '#2d2529' NOT NULL/);
+  assert.match(profileMigration, /ADD `body_feature` text DEFAULT 'none' NOT NULL/);
   assert.match(personalDataRoute, /db\.batch/);
   assert.match(personalDataRoute, /personal_data_clear_operations/);
   assert.match(personalDataRoute, /personal_data_clear_images/);

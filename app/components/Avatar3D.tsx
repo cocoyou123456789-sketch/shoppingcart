@@ -19,14 +19,14 @@ import {
   PCFSoftShadowMap,
   PerspectiveCamera,
   Scene,
-  SphereGeometry,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
   type Material,
   type Object3D,
 } from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import type { BodyFeature } from "../lib/avatar-appearance";
+import { AvatarOrbitControls } from "../lib/avatar-orbit-controls";
 import {
   AVATAR_AUTO_ROTATE_MS,
   avatarAriaDescription,
@@ -45,6 +45,11 @@ import {
   avatarBodyProfile,
   avatarCameraFit,
 } from "../lib/avatar-geometry.mjs";
+import {
+  buildHumanAvatar,
+  loadHumanAvatarTemplate,
+  type HumanAvatarTemplate,
+} from "../lib/human-avatar-model";
 
 export type BodyMetrics = {
   height: number;
@@ -56,6 +61,8 @@ export type BodyMetrics = {
   torso: number;
   legs: number;
   skinTone: string;
+  hairColor: string;
+  bodyFeature: BodyFeature;
   bodyShape: "straight" | "pear" | "hourglass" | "inverted" | "apple";
 };
 
@@ -86,7 +93,7 @@ const CAMERA_DIRECTIONS: Record<CameraView, [number, number, number]> = {
 };
 const CAMERA_SAFE_FRAME = { top: 0.13, right: 0.055, bottom: 0.05, left: 0.055 };
 const AVATAR_AUTO_ROTATE_BY_DEFAULT = false;
-// OrbitControls expects a factor below 1 for both public dolly methods.
+// The avatar's orbit controller expects a factor below 1 for both dolly methods.
 const AVATAR_ZOOM_SCALE = 1 / 1.15;
 const AVATAR_ZOOM_ANNOUNCE_DELAY_MS = 200;
 
@@ -299,7 +306,7 @@ type SceneRuntime = {
   scene: Scene;
   camera: PerspectiveCamera;
   renderer: WebGLRenderer;
-  controls: OrbitControls;
+  controls: AvatarOrbitControls;
   avatar: Group;
   metrics: BodyMetrics;
   outfit: AvatarOutfit;
@@ -355,6 +362,7 @@ function buildAvatar(
   outfit: AvatarOutfit,
   reducedDetail: boolean,
   resources: AvatarResources,
+  humanTemplate: HumanAvatarTemplate,
 ) {
   const detail = avatarGeometryDetail(reducedDetail);
   const avatar = new Group();
@@ -363,25 +371,7 @@ function buildAvatar(
   const heightScale = profile.heightScale;
 
   try {
-    const skin = material(resources, "skin", metrics.skinTone, 0.58, { metalness: 0 });
-    const hair = material(resources, "hair", "#2d2529", 0.5, { metalness: 0.01 });
-    const eyeWhite = material(resources, "eye-white", "#f7f2ea", 0.26, {
-      emissive: "#5b463b",
-      emissiveIntensity: 0.025,
-    });
-    const iris = material(resources, "iris", "#5a392d", 0.2);
-    const pupil = material(resources, "pupil", "#171318", 0.24);
-    const lipColor = new Color(metrics.skinTone)
-      .lerp(new Color("#8f4055"), 0.46)
-      .getStyle();
-    const lips = material(resources, "lips", lipColor, 0.5);
     const baseFabric = material(resources, "base-layer", "#b8959c", 0.76);
-    const shoeMaterial = material(resources, "shoe", "#4b454b", 0.68);
-    const jointGeometry = retainedGeometry(
-      resources,
-      "human-joint",
-      () => new SphereGeometry(1, detail.body[0], detail.body[1]),
-    );
 
     const addSegment = (
       top: [number, number, number],
@@ -420,20 +410,6 @@ function buildAvatar(
       avatar.add(segment);
       return segment;
     };
-    const addJoint = (
-      position: [number, number, number],
-      radius: number,
-      jointMaterial: Material = skin,
-      scale: [number, number, number] = [1, 0.94, 0.9],
-    ) => {
-      const joint = mesh(jointGeometry, jointMaterial, position, [
-        radius * scale[0],
-        radius * scale[1],
-        radius * scale[2],
-      ]);
-      avatar.add(joint);
-      return joint;
-    };
     const addTube = (
       rings: EllipticalRing[],
       tubeMaterial: Material,
@@ -448,257 +424,12 @@ function buildAvatar(
       return tube;
     };
 
-    const torsoGeometry = ellipticalRingGeometry(
-      profile.torsoRings,
-      detail.cylinder,
-    );
-    avatar.add(mesh(torsoGeometry, skin, [0, 0, 0]));
-
-    const neckBottom = joints.neckBase - 0.1 * heightScale;
-    const neckTop = joints.headCenter - 0.37 * heightScale;
-    addSegment(
-      [0, neckTop, -0.015],
-      [0, neckBottom, 0],
-      widths.limb * 1.15,
-      widths.limb * 1.28,
-      skin,
-      0.92,
-    );
-
-    const headScale = MathUtils.clamp(heightScale, 0.92, 1.08);
-    const headGroup = new Group();
-    headGroup.scale.setScalar(headScale);
-    headGroup.position.y = joints.headCenter * (1 - headScale);
-    avatar.add(headGroup);
-    const headGeometry = retainedGeometry(resources, "human-head", () =>
-      ellipticalRingGeometry(
-        [
-          { y: -0.43, xRadius: 0.1, zRadius: 0.15, zOffset: 0.02 },
-          { y: -0.36, xRadius: 0.31, zRadius: 0.34, zOffset: 0.015 },
-          { y: -0.2, xRadius: 0.42, zRadius: 0.39, zOffset: 0.015, frontScale: 1.04 },
-          { y: 0.05, xRadius: 0.46, zRadius: 0.42, zOffset: 0, frontScale: 1.035 },
-          { y: 0.27, xRadius: 0.43, zRadius: 0.4, zOffset: -0.005 },
-          { y: 0.41, xRadius: 0.29, zRadius: 0.3, zOffset: -0.012 },
-          { y: 0.45, xRadius: 0.08, zRadius: 0.09, zOffset: -0.015 },
-        ],
-        detail.head[0],
-      ),
-    );
-    headGroup.add(
-      mesh(
-        headGeometry,
-        skin,
-        [0, joints.headCenter, 0],
-      ),
-    );
-
-    const faceY = joints.headCenter;
-    const faceZ = 0.398;
-    const earGeometry = retainedGeometry(
-      resources,
-      "ear",
-      () => new SphereGeometry(0.1, ...detail.eye),
-    );
-    headGroup.add(
-      mesh(earGeometry, skin, [-0.455, faceY + 0.01, -0.005], [0.55, 1.15, 0.58]),
-      mesh(earGeometry, skin, [0.455, faceY + 0.01, -0.005], [0.55, 1.15, 0.58]),
-    );
-
-    const eyeGeometry = retainedGeometry(
-      resources,
-      "eye-white",
-      () => new SphereGeometry(0.075, ...detail.eye),
-    );
-    const irisGeometry = retainedGeometry(
-      resources,
-      "iris",
-      () => new SphereGeometry(0.036, ...detail.eye),
-    );
-    const pupilGeometry = retainedGeometry(
-      resources,
-      "pupil",
-      () => new SphereGeometry(0.019, ...detail.eye),
-    );
-    const highlightGeometry = retainedGeometry(
-      resources,
-      "eye-highlight",
-      () => new SphereGeometry(0.008, ...detail.eye),
-    );
-    for (const side of [-1, 1]) {
-      const eyeX = side * 0.165;
-      const eyeY = faceY + 0.08;
-      headGroup.add(
-        mesh(eyeGeometry, eyeWhite, [eyeX, eyeY, faceZ], [1.25, 0.68, 0.28]),
-        mesh(irisGeometry, iris, [eyeX, eyeY, faceZ + 0.018], [1, 1, 0.22]),
-        mesh(pupilGeometry, pupil, [eyeX, eyeY, faceZ + 0.026], [1, 1, 0.18]),
-        mesh(
-          highlightGeometry,
-          eyeWhite,
-          [eyeX - 0.009, eyeY + 0.011, faceZ + 0.032],
-          [1, 1, 0.16],
-        ),
-      );
-      const eyebrow = mesh(
-        retainedGeometry(
-          resources,
-          "eyebrow",
-          () => new CapsuleGeometry(0.018, 0.115, ...detail.capsule),
-        ),
-        hair,
-        [eyeX, eyeY + 0.115, faceZ + 0.02],
-        [1, 1, 0.5],
-      );
-      eyebrow.rotation.z = Math.PI / 2 + side * 0.08;
-      headGroup.add(eyebrow);
-    }
-
-    const noseBridge = mesh(
-      retainedGeometry(
-        resources,
-        "nose-bridge",
-        () => new CapsuleGeometry(0.035, 0.13, ...detail.capsule),
-      ),
-      skin,
-      [0, faceY - 0.02, faceZ + 0.028],
-      [0.72, 1, 0.68],
-    );
-    const noseTip = mesh(
-      retainedGeometry(
-        resources,
-        "nose-tip",
-        () => new SphereGeometry(0.055, ...detail.eye),
-      ),
-      skin,
-      [0, faceY - 0.105, faceZ + 0.075],
-      [0.92, 0.72, 0.88],
-    );
-    const mouth = mesh(
-      retainedGeometry(
-        resources,
-        "mouth",
-        () => new CapsuleGeometry(0.017, 0.115, ...detail.capsule),
-      ),
-      lips,
-      [0, faceY - 0.245, faceZ + 0.028],
-      [1, 1, 0.42],
-    );
-    mouth.rotation.z = Math.PI / 2;
-    headGroup.add(noseBridge, noseTip, mouth);
-
-    const hairCapGeometry = retainedGeometry(
-      resources,
-      "hair-cap",
-      () => new SphereGeometry(
-        0.485,
-        detail.hair[0],
-        detail.hair[1],
-        0,
-        Math.PI * 2,
-        0,
-        Math.PI * 0.58,
-      ),
-    );
-    headGroup.add(
-      mesh(
-        hairCapGeometry,
-        hair,
-        [0, faceY + 0.035, -0.16],
-        [1.015, 1.06, 0.84],
-      ),
-    );
-    const hairSideGeometry = retainedGeometry(
-      resources,
-      "hair-side",
-      () => new CapsuleGeometry(0.085, 0.58, ...detail.capsule),
-    );
-    headGroup.add(
-      mesh(hairSideGeometry, hair, [-0.41, faceY - 0.18, -0.14], [1, 1, 0.72]),
-      mesh(hairSideGeometry, hair, [0.41, faceY - 0.18, -0.14], [1, 1, 0.72]),
-      mesh(
-        retainedGeometry(
-          resources,
-          "hair-back",
-          () => new SphereGeometry(0.42, ...detail.hair),
-        ),
-        hair,
-        [0, faceY - 0.18, -0.24],
-        [1, 1.42, 0.58],
-      ),
-    );
-    const fringeGeometry = retainedGeometry(
-      resources,
-      "hair-fringe",
-      () => new SphereGeometry(0.065, ...detail.eye),
-    );
-    headGroup.add(
-      mesh(fringeGeometry, hair, [-0.25, faceY + 0.32, 0.39], [1.55, 0.58, 0.35]),
-      mesh(fringeGeometry, hair, [-0.085, faceY + 0.35, 0.4], [1.42, 0.54, 0.34]),
-      mesh(fringeGeometry, hair, [0.085, faceY + 0.35, 0.4], [1.42, 0.54, 0.34]),
-      mesh(fringeGeometry, hair, [0.25, faceY + 0.32, 0.39], [1.55, 0.58, 0.35]),
-    );
-
+    avatar.add(buildHumanAvatar(humanTemplate, metrics));
     const shoulderX = widths.shoulder - widths.limb * 0.04;
     const wristX = Math.max(widths.hips * 0.82, widths.waist + widths.limb * 0.9);
-    for (const side of [-1, 1]) {
-      const shoulder: [number, number, number] = [
-        side * shoulderX,
-        joints.shoulder - 0.075 * heightScale,
-        -0.005,
-      ];
-      const elbow: [number, number, number] = [
-        side * (shoulderX - widths.limb * 0.34),
-        joints.elbow,
-        0.005,
-      ];
-      const wrist: [number, number, number] = [
-        side * wristX,
-        joints.wrist,
-        0.035,
-      ];
-      addTube(
-        [
-          { y: wrist[1], xOffset: wrist[0], xRadius: widths.limb * 0.62, zRadius: widths.limb * 0.54, zOffset: wrist[2] },
-          { y: MathUtils.lerp(wrist[1], elbow[1], 0.48), xOffset: MathUtils.lerp(wrist[0], elbow[0], 0.48), xRadius: widths.limb * 0.76, zRadius: widths.limb * 0.67, zOffset: 0.025 },
-          { y: elbow[1], xOffset: elbow[0], xRadius: widths.limb * 0.84, zRadius: widths.limb * 0.74, zOffset: elbow[2] },
-          { y: MathUtils.lerp(elbow[1], shoulder[1], 0.52), xOffset: MathUtils.lerp(elbow[0], shoulder[0], 0.52), xRadius: widths.limb * 0.98, zRadius: widths.limb * 0.86, zOffset: 0 },
-          { y: shoulder[1], xOffset: shoulder[0], xRadius: widths.limb * 1.04, zRadius: widths.limb * 0.92, zOffset: shoulder[2] },
-          { y: joints.shoulder + 0.04 * heightScale, xOffset: side * (shoulderX - widths.limb * 0.14), xRadius: widths.limb * 0.7, zRadius: widths.limb * 0.64, zOffset: -0.008 },
-        ],
-        skin,
-      );
-      addJoint(
-        [side * wristX, joints.wrist - 0.22 * heightScale, 0.065],
-        widths.limb * 0.92,
-        skin,
-        [0.7, 1.28, 0.5],
-      );
-    }
-
     const legX = widths.hips * 0.42;
     const thighRadius = Math.max(widths.limb * 1.42, widths.hips * 0.205);
     const calfRadius = Math.max(widths.limb * 1.05, widths.hips * 0.145);
-    for (const side of [-1, 1]) {
-      const hip: [number, number, number] = [side * legX, joints.crotch + 0.05 * heightScale, -0.015];
-      const knee: [number, number, number] = [side * legX, joints.knee, 0.015];
-      const ankle: [number, number, number] = [side * legX, joints.ankle, 0.015];
-      addTube(
-        [
-          { y: ankle[1], xOffset: ankle[0], xRadius: calfRadius * 0.54, zRadius: calfRadius * 0.48, zOffset: ankle[2] },
-          { y: MathUtils.lerp(ankle[1], knee[1], 0.42), xOffset: side * legX, xRadius: calfRadius * 0.92, zRadius: calfRadius * 0.82, zOffset: 0.02 },
-          { y: MathUtils.lerp(ankle[1], knee[1], 0.72), xOffset: side * legX, xRadius: calfRadius, zRadius: calfRadius * 0.9, zOffset: 0.018 },
-          { y: knee[1], xOffset: knee[0], xRadius: thighRadius * 0.68, zRadius: thighRadius * 0.62, zOffset: knee[2] },
-          { y: MathUtils.lerp(knee[1], hip[1], 0.48), xOffset: side * legX, xRadius: thighRadius * 0.88, zRadius: thighRadius * 0.82, zOffset: 0 },
-          { y: hip[1], xOffset: hip[0], xRadius: thighRadius, zRadius: thighRadius * 0.92, zOffset: hip[2] },
-        ],
-        skin,
-      );
-      addJoint(
-        [side * legX, Math.max(0.12, joints.ankle * 0.5), 0.18],
-        calfRadius * 1.08,
-        shoeMaterial,
-        [1.12, 0.62, 2.05],
-      );
-    }
 
     const baseTopRings = profile.torsoRings.filter(
       (ring) => ring.y >= joints.waist - 0.08 && ring.y <= joints.shoulder - 0.16,
@@ -1042,7 +773,7 @@ export function Avatar3D({
   const mountRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<SceneRuntime | null>(null);
   const cameraRef = useRef<PerspectiveCamera | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
+  const controlsRef = useRef<AvatarOrbitControls | null>(null);
   const viewSwitcherRef = useRef<HTMLDivElement>(null);
   const focusAfterRetryRef = useRef(false);
   const focusOnReadyRef = useRef(focusOnReady);
@@ -1053,6 +784,9 @@ export function Avatar3D({
   const [announcedZoomLevel, setAnnouncedZoomLevel] = useState(100);
   const [renderStatus, setRenderStatus] = useState<"initializing" | "ready" | "failed">(
     "initializing",
+  );
+  const [humanTemplate, setHumanTemplate] = useState<HumanAvatarTemplate | null>(
+    null,
   );
   const [retryVersion, setRetryVersion] = useState(0);
   const cameraViewRef = useRef<CameraView>("front");
@@ -1069,6 +803,20 @@ export function Avatar3D({
   }, [compact]);
 
   useEffect(() => {
+    let active = true;
+    void loadHumanAvatarTemplate()
+      .then((template) => {
+        if (active) setHumanTemplate(template);
+      })
+      .catch(() => {
+        if (active) setRenderStatus("failed");
+      });
+    return () => {
+      active = false;
+    };
+  }, [retryVersion]);
+
+  useEffect(() => {
     const timer = window.setTimeout(
       () => setAnnouncedZoomLevel(zoomLevel),
       AVATAR_ZOOM_ANNOUNCE_DELAY_MS,
@@ -1078,7 +826,7 @@ export function Avatar3D({
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount) return;
+    if (!mount || !humanTemplate) return;
 
     const initialize = () => {
     const cleanups: Array<() => void> = [];
@@ -1178,7 +926,13 @@ export function Avatar3D({
 
     const reducedDetail = lowPowerDevice || isSmallScreen;
     const initialInput = sceneInputRef.current;
-    const avatar = buildAvatar(initialInput.metrics, initialInput.outfit, reducedDetail, resources);
+    const avatar = buildAvatar(
+      initialInput.metrics,
+      initialInput.outfit,
+      reducedDetail,
+      resources,
+      humanTemplate,
+    );
     scene.add(avatar);
 
     const floor = new Mesh(
@@ -1190,7 +944,7 @@ export function Avatar3D({
     floor.receiveShadow = true;
     scene.add(floor);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    const controls = new AvatarOrbitControls(camera, renderer.domElement);
     cleanups.push(() => controls.dispose());
     renderer.domElement.style.touchAction = "pan-y";
     controls.enablePan = false;
@@ -1555,12 +1309,13 @@ export function Avatar3D({
       window.cancelAnimationFrame(initializationFrame);
       runtimeCleanup?.();
     };
-  }, [retryVersion]);
+  }, [humanTemplate, retryVersion]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (
       !runtime ||
+      !humanTemplate ||
       !isActiveAvatarRuntime(runtimeRef.current, runtime) ||
       (runtime.metrics === sceneInput.metrics && runtime.outfit === sceneInput.outfit)
     ) return;
@@ -1572,6 +1327,7 @@ export function Avatar3D({
         sceneInput.outfit,
         runtime.reducedDetail,
         runtime.resources,
+        humanTemplate,
       );
       replaceRuntimeAvatar(
         runtime,
@@ -1593,7 +1349,7 @@ export function Avatar3D({
       }
       runtime.failRendering();
     }
-  }, [sceneInput, retryVersion]);
+  }, [humanTemplate, sceneInput, retryVersion]);
 
   useEffect(() => {
     runtimeRef.current?.resize();

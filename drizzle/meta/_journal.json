@@ -43,6 +43,13 @@
       "when": 1783978494972,
       "tag": "0005_little_doorman",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784532545896,
+      "tag": "0006_unknown_carmella_unuscione",
+      "breakpoints": true
     }
   ]
 }

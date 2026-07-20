@@ -1,7 +1,7 @@
 // @ts-check
 
-const DEVICE_SNAPSHOT_VERSION = 2;
-const KNOWN_DEVICE_SNAPSHOT_VERSIONS = new Set([1, DEVICE_SNAPSHOT_VERSION]);
+const DEVICE_SNAPSHOT_VERSION = 3;
+const KNOWN_DEVICE_SNAPSHOT_VERSIONS = new Set([1, 2, DEVICE_SNAPSHOT_VERSION]);
 
 /**
  * Serializes every device-owned product field explicitly so additions cannot
@@ -38,7 +38,7 @@ export function serializeDeviceSnapshot(
 /**
  * Parses known device snapshots while refusing future versions that this
  * client could otherwise overwrite with an incomplete older schema.
- * Versionless records and v1 are accepted as legacy formats.
+ * Versionless records, v1, and v2 are accepted as legacy formats.
  *
  * @param {string | null} raw
  * @returns {Record<string, unknown> | null}
@@ -101,7 +101,7 @@ function deviceValuesEqual(left, right) {
 }
 
 /**
- * Compares a current v2 snapshot with a proposed v2 serialization while
+ * Compares a current v3 snapshot with a proposed v3 serialization while
  * ignoring only the write timestamp. Legacy snapshots intentionally return
  * false so the next safe save migrates them to the protected schema.
  *

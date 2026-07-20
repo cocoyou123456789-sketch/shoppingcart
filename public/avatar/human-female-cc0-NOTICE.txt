@@ -1,0 +1,17 @@
+Human female base mesh and head texture
+
+Source:
+https://github.com/Godot-Dojo/Deprecated-Godot-XR-Avatar
+Commit:
+81a7cb24c3ba03c68523e48e946d631551dfebcb
+
+The source glTF identifies the asset as "CC0 Public Domain". The source
+project documents the supplied MakeHuman demo assets as CC0 1.0 Universal.
+The model was generated with MakeHuman, whose core assets and exported models
+are published under CC0.
+
+The head texture in this project is a resized WebP derivative of:
+addons/godot-xr-avatar/textures/young_caucasian_female_special_suit.png
+
+CC0 1.0 Universal:
+https://creativecommons.org/publicdomain/zero/1.0/

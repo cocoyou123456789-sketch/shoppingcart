@@ -34,6 +34,12 @@ import {
   MAX_CLIENT_IMAGE_BYTES,
 } from "../lib/garment-form-options";
 import {
+  DEFAULT_BODY_FEATURE,
+  DEFAULT_HAIR_COLOR,
+  normalizeBodyFeature,
+  normalizeHexColor,
+} from "../lib/avatar-appearance";
+import {
   createSerialLatestQueue,
   createSerialTaskQueue,
 } from "../lib/serial-latest-queue.mjs";
@@ -104,7 +110,7 @@ const LOCAL_SNAPSHOT_KEY = "songsong-closet:device-state:v1";
 const CLEAR_BOUNDARY_LOCK_NAME = "songsong-closet:clear-boundary:v2";
 
 type LocalSnapshot = {
-  version?: 1 | 2;
+  version?: 1 | 2 | 3;
   wardrobe: WardrobeItem[];
   metrics: BodyMetrics;
   outfit?: OutfitSelection;
@@ -161,6 +167,8 @@ const DEFAULT_METRICS: BodyMetrics = {
   legs: 82,
   skinTone: "#d7a883",
   bodyShape: "hourglass",
+  hairColor: DEFAULT_HAIR_COLOR,
+  bodyFeature: DEFAULT_BODY_FEATURE,
 };
 
 function clearedPersonalSnapshot(
@@ -247,6 +255,14 @@ function normalizeDailyPreferences(value: unknown): DailyPreferences | undefined
   };
 }
 
+function normalizeStoredAppearance<T extends Partial<BodyMetrics>>(value: T) {
+  return {
+    ...value,
+    hairColor: normalizeHexColor(value.hairColor),
+    bodyFeature: normalizeBodyFeature(value.bodyFeature),
+  };
+}
+
 function readActiveClearSignal(storageKey: string) {
   return readActiveClearMarker(storageKey)?.signal ?? null;
 }
@@ -270,9 +286,17 @@ function parseLocalSnapshot(
     const parsed = parseDeviceSnapshot(raw) as Partial<LocalSnapshot> | null;
     if (!parsed) return null;
     if (!snapshotMatchesClearSignal(parsed.clearSignal, activeClearSignal)) return null;
-    if (!Array.isArray(parsed.wardrobe) || !parsed.metrics || typeof parsed.metrics !== "object") {
+    if (
+      !Array.isArray(parsed.wardrobe) ||
+      !parsed.metrics ||
+      typeof parsed.metrics !== "object" ||
+      Array.isArray(parsed.metrics)
+    ) {
       return null;
     }
+    const parsedMetrics = normalizeStoredAppearance(
+      parsed.metrics as Partial<BodyMetrics>,
+    );
     const wardrobe = mergeWardrobe(
       parsed.wardrobe.filter(
         (item) =>
@@ -293,9 +317,17 @@ function parseLocalSnapshot(
       ? Math.min(100, Math.max(0, parsed.mood))
       : undefined;
     return {
-      version: parsed.version === 2 ? 2 : 1,
+      version:
+        parsed.version === 3
+          ? 3
+          : parsed.version === 2
+            ? 2
+            : 1,
       wardrobe,
-      metrics: { ...DEFAULT_METRICS, ...parsed.metrics },
+      metrics: {
+        ...DEFAULT_METRICS,
+        ...parsedMetrics,
+      },
       outfit: parsed.outfit && typeof parsed.outfit === "object" ? parsed.outfit : undefined,
       mood,
       cartProductIds: Array.isArray(parsed.cartProductIds)
@@ -478,14 +510,17 @@ function isClearedLocalSnapshot(storageKey: string) {
     const parsed = parseDeviceSnapshot(raw) as Partial<LocalSnapshot> | null;
     if (!parsed) return false;
     const metrics = parsed.metrics as Partial<BodyMetrics> | undefined;
+    const normalizedMetrics = metrics
+      ? normalizeStoredAppearance(metrics)
+      : undefined;
     const outfit = parsed.outfit ?? {};
     const dailyPreferences = normalizeDailyPreferences(parsed.dailyPreferences);
     return (
       Array.isArray(parsed.wardrobe) &&
       parsed.wardrobe.length === 0 &&
-      Boolean(metrics) &&
+      Boolean(normalizedMetrics) &&
       Object.entries(DEFAULT_METRICS).every(
-        ([key, value]) => metrics?.[key as keyof BodyMetrics] === value,
+        ([key, value]) => normalizedMetrics?.[key as keyof BodyMetrics] === value,
       ) &&
       Object.values(outfit).every((value) => !value) &&
       parsed.mood === 62 &&

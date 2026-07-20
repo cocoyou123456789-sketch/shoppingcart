@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  DEFAULT_BODY_FEATURE,
+  DEFAULT_HAIR_COLOR,
+} from "../app/lib/avatar-appearance";
 
 export const wardrobeItems = sqliteTable(
   "wardrobe_items",
@@ -39,6 +43,8 @@ export const bodyProfiles = sqliteTable("body_profiles", {
   legs: integer("legs").notNull(),
   skinTone: text("skin_tone").notNull(),
   bodyShape: text("body_shape").notNull(),
+  hairColor: text("hair_color").notNull().default(DEFAULT_HAIR_COLOR),
+  bodyFeature: text("body_feature").notNull().default(DEFAULT_BODY_FEATURE),
   revision: integer("revision").notNull().default(1),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

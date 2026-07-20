@@ -82,4 +82,7 @@ test("all runtime schema entry points use the per-binding initializer", async ()
   assert.match(personalClear, /ensureClearTables = createPerBindingInitializer/);
   assert.match(wardrobe, /ALTER TABLE wardrobe_image_cleanup ADD COLUMN upload_state/);
   assert.match(profile, /ALTER TABLE body_profiles ADD COLUMN revision/);
+  assert.match(profile, /ALTER TABLE body_profiles ADD COLUMN hair_color/);
+  assert.match(profile, /ALTER TABLE body_profiles ADD COLUMN body_feature/);
+  assert.match(profile, /ensureProfileColumn/);
 });

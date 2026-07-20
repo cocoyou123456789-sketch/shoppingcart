@@ -101,8 +101,10 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
   const runId = crypto.randomUUID();
   const userAEmail = `a-${runId}@example.com`;
   const userBEmail = `b-${runId}@example.com`;
+  const userCEmail = `c-${runId}@example.com`;
   const userA = await authenticatedHeaders(userAEmail);
   const userB = await authenticatedHeaders(userBEmail);
+  const userC = await authenticatedHeaders(userCEmail);
   const staleAliceOnBob = {
     ...userB,
     [expectedOwnerHeader]: userA[expectedOwnerHeader],
@@ -316,7 +318,23 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       legs: 82,
       skinTone: "#d7a883",
       bodyShape: "hourglass",
+      hairColor: "#6b4436",
+      bodyFeature: "freckles",
     };
+    const legacyInsertProfile = { ...profile };
+    delete legacyInsertProfile.hairColor;
+    delete legacyInsertProfile.bodyFeature;
+    const legacyInsert = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userC, "content-type": "application/json" },
+      body: JSON.stringify({ ...legacyInsertProfile, expectedRevision: 0 }),
+    });
+    assert.equal(legacyInsert.status, 200);
+    const legacyInsertResult = await fetch(`${origin}/api/profile`, {
+      headers: userC,
+    }).then((response) => response.json());
+    assert.equal(legacyInsertResult.profile.hairColor, "#2d2529");
+    assert.equal(legacyInsertResult.profile.bodyFeature, "none");
     const missingProfileRevision = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json" },
@@ -326,6 +344,20 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.deepEqual(await missingProfileRevision.json(), {
       error: "expectedRevision must be a non-negative safe integer",
     });
+    for (const [field, value, error] of [
+      ["hairColor", "brown", "invalid hair color"],
+      ["hairColor", null, "invalid hair color"],
+      ["bodyFeature", "piercing", "invalid body feature"],
+      ["bodyFeature", null, "invalid body feature"],
+    ]) {
+      const invalidAppearance = await fetch(`${origin}/api/profile`, {
+        method: "PUT",
+        headers: { ...userA, "content-type": "application/json" },
+        body: JSON.stringify({ ...profile, [field]: value, expectedRevision: 0 }),
+      });
+      assert.equal(invalidAppearance.status, 400);
+      assert.deepEqual(await invalidAppearance.json(), { error });
+    }
     const profileSave = await fetch(`${origin}/api/profile`, {
       method: "PUT",
       headers: { ...userA, "content-type": "application/json" },
@@ -340,6 +372,8 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     const ownProfile = await ownProfileResponse.json();
     const otherProfile = await otherProfileResponse.json();
     assert.equal(ownProfile.profile.height, 166);
+    assert.equal(ownProfile.profile.hairColor, "#6b4436");
+    assert.equal(ownProfile.profile.bodyFeature, "freckles");
     assert.equal(ownProfile.revision, 1);
     assert.equal(otherProfile.profile, null);
     assert.equal(otherProfile.revision, 0);
@@ -364,6 +398,8 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
     assert.equal(conflictedProfile.error, "profile revision conflict");
     assert.equal(conflictedProfile.revision, 2);
     assert.equal(conflictedProfile.profile.height, [167, 168][winningProfileIndex]);
+    assert.equal(conflictedProfile.profile.hairColor, "#6b4436");
+    assert.equal(conflictedProfile.profile.bodyFeature, "freckles");
     const latestProfile = await fetch(`${origin}/api/profile`, { headers: userA })
       .then((response) => response.json());
     assert.equal(latestProfile.revision, 2);
@@ -568,6 +604,20 @@ test("authenticated users keep profiles, garments, and images isolated", { timeo
       body: JSON.stringify({ ...profile, height: 174, expectedRevision: 0 }),
     });
     assert.equal(otherProfileSave.status, 200);
+    const legacyProfile = { ...profile };
+    delete legacyProfile.hairColor;
+    delete legacyProfile.bodyFeature;
+    const legacyProfileSave = await fetch(`${origin}/api/profile`, {
+      method: "PUT",
+      headers: { ...userB, "content-type": "application/json" },
+      body: JSON.stringify({ ...legacyProfile, height: 174, expectedRevision: 1 }),
+    });
+    assert.equal(legacyProfileSave.status, 200);
+    const legacyProfileResult = await fetch(`${origin}/api/profile`, {
+      headers: userB,
+    }).then((response) => response.json());
+    assert.equal(legacyProfileResult.profile.hairColor, profile.hairColor);
+    assert.equal(legacyProfileResult.profile.bodyFeature, profile.bodyFeature);
     const clearAForm = garmentForm();
     clearAForm.set("name", "待清除的 A 上衣");
     clearAForm.set("photo", new Blob([validPng], { type: "image/png" }), "a.png");
